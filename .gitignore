@@ -1,0 +1,19 @@
+# Binaries
+bin/
+dist/
+dajimux
+
+# Socket & runtime files
+*.sock
+/tmp/dajimux*
+
+# Go artifacts
+*.test
+*.out
+
+# macOS metadata
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
