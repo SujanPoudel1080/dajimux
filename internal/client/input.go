@@ -33,6 +33,11 @@ const (
 	ActionResizeDelta     ActionType = "resize_delta"
 	ActionOpenPalette     ActionType = "open_palette"
 	ActionClosePalette    ActionType = "close_palette"
+	ActionPaletteType     ActionType = "palette_type"
+	ActionPaletteBackspace ActionType = "palette_backspace"
+	ActionPaletteUp       ActionType = "palette_up"
+	ActionPaletteDown     ActionType = "palette_down"
+	ActionExecutePalette  ActionType = "palette_execute"
 )
 
 // InputResult contains the outcome of processing user keystrokes.
@@ -178,9 +183,34 @@ func (h *InputHandler) handleResizeMode(data []byte) InputResult {
 }
 
 func (h *InputHandler) handlePaletteMode(data []byte) InputResult {
-	if len(data) == 1 && data[0] == 0x1b { // Escape closes palette
-		h.CurrentMode = protocol.ModeNormal
-		return InputResult{Action: ActionClosePalette, TargetMode: protocol.ModeNormal}
+	if len(data) == 1 {
+		b := data[0]
+		if b == 0x1b { // Escape closes palette
+			h.CurrentMode = protocol.ModeNormal
+			return InputResult{Action: ActionClosePalette, TargetMode: protocol.ModeNormal}
+		}
+		if b == '\r' || b == '\n' { // Enter executes
+			return InputResult{Action: ActionExecutePalette}
+		}
+		if b == 0x7f || b == 0x08 { // Backspace
+			return InputResult{Action: ActionPaletteBackspace}
+		}
+		if b == 0x0e { // Ctrl-N / Down
+			return InputResult{Action: ActionPaletteDown}
+		}
+		if b == 0x10 { // Ctrl-P / Up
+			return InputResult{Action: ActionPaletteUp}
+		}
+		if b >= 32 && b < 127 { // Printable character
+			return InputResult{Action: ActionPaletteType, RawForward: data}
+		}
+	} else if len(data) == 3 && data[0] == 0x1b && data[1] == '[' {
+		switch data[2] {
+		case 'A': // Up arrow
+			return InputResult{Action: ActionPaletteUp}
+		case 'B': // Down arrow
+			return InputResult{Action: ActionPaletteDown}
+		}
 	}
-	return InputResult{Action: ActionPassThrough, RawForward: data}
+	return InputResult{Action: ActionNone}
 }

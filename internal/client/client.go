@@ -21,6 +21,7 @@ type Client struct {
 	SessionName  string
 	conn         net.Conn
 	inputHandler *InputHandler
+	palette      *Palette
 	lastState    protocol.LayoutStatePayload
 	cols         int
 	rows         int
@@ -37,6 +38,7 @@ func NewClient(socketPath, sessionName string) *Client {
 		SocketPath:   socketPath,
 		SessionName:  sessionName,
 		inputHandler: NewInputHandler(),
+		palette:      NewPalette(),
 	}
 }
 
@@ -205,7 +207,72 @@ func (c *Client) readStdinLoop() error {
 			c.sendAction("resize_delta", map[string]string{
 				"delta": fmt.Sprintf("%.2f", res.ResizeDelta),
 			})
+
+		case ActionOpenPalette:
+			c.palette = NewPalette()
+			c.renderPalette()
+
+		case ActionClosePalette:
+			c.palette = nil
+			c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeNormal)})
+			c.renderChrome(c.lastState)
+
+		case ActionPaletteType:
+			if c.palette != nil && len(res.RawForward) > 0 {
+				c.palette.TypeChar(rune(res.RawForward[0]))
+				c.renderPalette()
+			}
+
+		case ActionPaletteBackspace:
+			if c.palette != nil {
+				c.palette.Backspace()
+				c.renderPalette()
+			}
+
+		case ActionPaletteDown:
+			if c.palette != nil {
+				items := c.palette.Filter()
+				c.palette.MoveDown(len(items))
+				c.renderPalette()
+			}
+
+		case ActionPaletteUp:
+			if c.palette != nil {
+				c.palette.MoveUp()
+				c.renderPalette()
+			}
+
+		case ActionExecutePalette:
+			if c.palette != nil {
+				items := c.palette.Filter()
+				if len(items) > 0 && c.palette.SelectedIndex < len(items) {
+					selected := items[c.palette.SelectedIndex]
+					c.executePaletteItem(selected)
+				}
+				c.palette = nil
+				c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeNormal)})
+				c.renderChrome(c.lastState)
+			}
 		}
+	}
+}
+
+func (c *Client) executePaletteItem(item PaletteItem) {
+	switch item.Action {
+	case ActionSplitVertical:
+		c.sendAction("split_v", nil)
+	case ActionSplitHorizontal:
+		c.sendAction("split_h", nil)
+	case ActionClosePane:
+		c.sendAction("close_pane", nil)
+	case ActionToggleMonocle:
+		c.sendAction("toggle_monocle", nil)
+	case ActionSwitchWorkspace:
+		c.sendAction("switch_workspace", map[string]string{
+			"workspace": fmt.Sprintf("%d", item.Workspace),
+		})
+	case ActionModeChange:
+		c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeResize)})
 	}
 }
 
@@ -286,6 +353,113 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	b.WriteString("\0338")
 
 	os.Stdout.WriteString(b.String())
+}
+
+// renderPalette draws an interactive floating overlay box centered on the terminal screen.
+func (c *Client) renderPalette() {
+	if c.palette == nil {
+		return
+	}
+
+	c.mu.Lock()
+	cols := c.cols
+	rows := c.rows
+	c.mu.Unlock()
+
+	items := c.palette.Filter()
+	boxWidth := 54
+	if boxWidth > cols-4 {
+		boxWidth = cols - 4
+	}
+	if boxWidth < 20 {
+		boxWidth = 20
+	}
+
+	maxVisibleItems := 8
+	boxHeight := len(items) + 4
+	if boxHeight > maxVisibleItems+4 {
+		boxHeight = maxVisibleItems + 4
+	}
+
+	startX := (cols - boxWidth) / 2
+	startY := (rows - boxHeight) / 2
+	if startX < 1 {
+		startX = 1
+	}
+	if startY < 2 {
+		startY = 2
+	}
+
+	var b strings.Builder
+	b.WriteString("\0337") // Save cursor
+
+	// Palette Border & Colors: Deep Blue background (237) and Cyan borders (38;5;51)
+	bg := "\033[48;5;235m"
+	fg := "\033[38;5;255m"
+	borderFg := "\033[38;5;51m"
+	reset := "\033[0m"
+
+	// 1. Top border
+	title := " Command Palette "
+	dashes := boxWidth - 2 - len(title)
+	if dashes < 0 {
+		dashes = 0
+	}
+	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s┌─%s%s%s%s┐%s",
+		startY, startX, bg, borderFg, fg, title, borderFg, strings.Repeat("─", dashes), reset))
+
+	// 2. Query input line
+	queryPrompt := fmt.Sprintf("> %s_", c.palette.Query)
+	padQuery := boxWidth - 4 - len(queryPrompt)
+	if padQuery < 0 {
+		padQuery = 0
+	}
+	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s│ %s\033[1m%s\033[0m%s%s%s│%s",
+		startY+1, startX, bg, borderFg, fg, queryPrompt, bg, strings.Repeat(" ", padQuery), borderFg, reset))
+
+	// 3. Separator
+	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s├%s┤%s",
+		startY+2, startX, bg, borderFg, strings.Repeat("─", boxWidth-2), reset))
+
+	// 4. Items
+	for i := 0; i < maxVisibleItems && i < len(items); i++ {
+		item := items[i]
+		prefix := "  "
+		lineBg := bg
+		lineFg := fg
+		if i == c.palette.SelectedIndex {
+			prefix = "> "
+			lineBg = "\033[48;5;24m" // Highlighted dark cyan
+			lineFg = "\033[1m\033[38;5;255m"
+		}
+
+		lineText := fmt.Sprintf("%s%-20s %s", prefix, item.Title, item.Description)
+		if len(lineText) > boxWidth-4 {
+			lineText = lineText[:boxWidth-4]
+		}
+		padItem := boxWidth - 2 - len(lineText)
+		if padItem < 0 {
+			padItem = 0
+		}
+
+		b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s│%s%s%s%s%s│%s",
+			startY+3+i, startX, borderFg, lineBg, lineFg, lineText, strings.Repeat(" ", padItem), reset, borderFg, reset))
+	}
+
+	// 5. Bottom border
+	bottomY := startY + 3 + min(maxVisibleItems, len(items))
+	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s└%s┘%s",
+		bottomY, startX, bg, borderFg, strings.Repeat("─", boxWidth-2), reset))
+
+	b.WriteString("\0338") // Restore cursor
+	os.Stdout.WriteString(b.String())
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (c *Client) restoreTerminal() {
