@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/SujanPoudel1080/dajimux/internal/bsp"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
@@ -136,6 +137,11 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 					d.clients[conn] = session
 					d.mu.Unlock()
 
+					// Resize session to match connected client terminal dimensions
+					if p.Cols > 0 && p.Rows > 0 {
+						session.ResizeTerminal(p.Cols, p.Rows)
+					}
+
 					// Send current layout state to newly attached client
 					state := session.GetLayoutState()
 					data, _ := json.Marshal(state)
@@ -176,18 +182,26 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 			}
 
 		case protocol.MsgAgentStatus:
-			if attachedSession != nil {
+			sess := attachedSession
+			if sess == nil {
+				sess = d.getSessionForRequest(env.SessionID)
+			}
+			if sess != nil {
 				var p protocol.AgentStatusPayload
 				if err := json.Unmarshal(env.Payload, &p); err == nil {
-					attachedSession.Broker.UpdateStatus(env.PaneID, p)
+					sess.Broker.UpdateStatus(env.PaneID, p)
 				}
 			}
 
 		case protocol.MsgAgentSend:
-			if attachedSession != nil {
+			sess := attachedSession
+			if sess == nil {
+				sess = d.getSessionForRequest(env.SessionID)
+			}
+			if sess != nil {
 				var p protocol.AgentMessagePayload
 				if err := json.Unmarshal(env.Payload, &p); err == nil {
-					msg := attachedSession.Broker.Send(p.FromPaneID, p.ToTarget, p.Content)
+					msg := sess.Broker.Send(p.FromPaneID, p.ToTarget, p.Content)
 					data, _ := json.Marshal(msg)
 					_ = protocol.WriteEnvelope(conn, protocol.Envelope{
 						Type:    protocol.MsgAgentSend,
@@ -197,12 +211,16 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 			}
 
 		case protocol.MsgPaneCapture:
-			if attachedSession != nil {
+			sess := attachedSession
+			if sess == nil {
+				sess = d.getSessionForRequest(env.SessionID)
+			}
+			if sess != nil {
 				var p protocol.PaneCaptureRequest
 				if err := json.Unmarshal(env.Payload, &p); err == nil {
-					attachedSession.mu.RLock()
-					targetPane := attachedSession.Panes[p.TargetPaneID]
-					attachedSession.mu.RUnlock()
+					sess.mu.RLock()
+					targetPane := sess.Panes[p.TargetPaneID]
+					sess.mu.RUnlock()
 
 					var lines []string
 					if targetPane != nil {
@@ -230,26 +248,72 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 	d.mu.Unlock()
 }
 
-func (d *Daemon) streamPaneOutput(conn net.Conn, s *Session) {
-	for {
-		active := s.ActivePane()
-		if active == nil {
-			break
+func (d *Daemon) getSessionForRequest(sessionID string) *Session {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if sessionID != "" {
+		if s, ok := d.Sessions[sessionID]; ok {
+			return s
 		}
+	}
+	return d.Sessions[d.DefaultSession]
+}
 
+func (d *Daemon) streamPaneOutput(conn net.Conn, s *Session) {
+	outCh := make(chan []byte, 64)
+	var currentSubscribed *Pane
+
+	subscribe := func(p *Pane) {
+		if currentSubscribed != nil {
+			currentSubscribed.RemoveListener(outCh)
+		}
+		currentSubscribed = p
+		if p != nil {
+			p.AddListener(outCh)
+			// Immediately flush recent ANSI buffer so client sees shell prompt
+			history := p.GetRawBuffer()
+			if len(history) > 0 {
+				f := protocol.FrameUpdatePayload{ANSI: history}
+				payload, _ := json.Marshal(f)
+				_ = protocol.WriteEnvelope(conn, protocol.Envelope{
+					Type:    protocol.MsgFrameUpdate,
+					Payload: payload,
+				})
+			}
+		}
+	}
+
+	active := s.ActivePane()
+	subscribe(active)
+	defer func() {
+		if currentSubscribed != nil {
+			currentSubscribed.RemoveListener(outCh)
+		}
+	}()
+
+	ticker := time.NewTicker(80 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
 		select {
-		case data, ok := <-active.OutputCh:
+		case data, ok := <-outCh:
 			if !ok {
 				return
 			}
 			f := protocol.FrameUpdatePayload{ANSI: data}
 			payload, _ := json.Marshal(f)
-			err := protocol.WriteEnvelope(conn, protocol.Envelope{
+			if err := protocol.WriteEnvelope(conn, protocol.Envelope{
 				Type:    protocol.MsgFrameUpdate,
 				Payload: payload,
-			})
-			if err != nil {
+			}); err != nil {
 				return
+			}
+
+		case <-ticker.C:
+			// Automatically track active pane switches (navigation, splits, workspaces)
+			curr := s.ActivePane()
+			if curr != currentSubscribed {
+				subscribe(curr)
 			}
 		}
 	}

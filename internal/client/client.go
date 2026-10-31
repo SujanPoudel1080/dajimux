@@ -71,6 +71,9 @@ func (c *Client) Run() error {
 
 	// Clear screen and enter alternate screen buffer
 	fmt.Print("\033[?1049h\033[H\033[2J")
+	if c.rows > 3 {
+		fmt.Printf("\033[2;%dr", c.rows-1)
+	}
 
 	// Send Attach Envelope
 	attachData, _ := json.Marshal(protocol.AttachPayload{
@@ -349,8 +352,17 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	}
 	b.WriteString("\033[0m")
 
-	// Restore cursor
-	b.WriteString("\0338")
+	// Position cursor inside active pane viewport
+	activeY := 2
+	activeX := 1
+	for _, p := range state.Panes {
+		if p.IsActive {
+			activeY = p.Y + 1
+			activeX = p.X + 1
+			break
+		}
+	}
+	b.WriteString(fmt.Sprintf("\033[%d;%dH", activeY, activeX))
 
 	os.Stdout.WriteString(b.String())
 }
@@ -467,6 +479,8 @@ func (c *Client) restoreTerminal() {
 		disableRawMode(int(os.Stdin.Fd()), c.origTerm)
 		c.origTerm = nil
 	}
+	// Reset scrolling region to full screen
+	fmt.Print("\033[r")
 	// Exit alternate screen buffer
 	fmt.Print("\033[?1049l\033[?25h")
 }

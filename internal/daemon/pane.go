@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/SujanPoudel1080/dajimux/internal/bsp"
+	"github.com/creack/pty"
 )
 
 // Pane represents a single virtual terminal window running a shell or program.
@@ -22,24 +23,28 @@ type Pane struct {
 	Bounds      bsp.Rect
 	AgentState  string
 	AgentBadge  string
+	rawBuffer   []byte
+	maxRawBytes int
 	scrollback  []string
 	maxLines    int
 	isClosed    bool
-	OutputCh    chan []byte
+	listeners   map[chan []byte]struct{}
 }
 
 // NewPane allocates a pane instance with in-memory scrollback buffer.
 func NewPane(id, title string) *Pane {
 	return &Pane{
-		ID:         id,
-		Title:      title,
-		maxLines:   2000,
-		scrollback: make([]string, 0, 500),
-		OutputCh:   make(chan []byte, 128),
+		ID:          id,
+		Title:       title,
+		maxRawBytes: 256 * 1024, // 256KB raw ANSI history for replay on attach
+		rawBuffer:   make([]byte, 0, 8192),
+		maxLines:    2000,
+		scrollback:  make([]string, 0, 500),
+		listeners:   make(map[chan []byte]struct{}),
 	}
 }
 
-// Start spawns a shell process inside a new pseudoterminal.
+// Start spawns an interactive login shell inside a new pseudoterminal.
 func (p *Pane) Start(shellPath string, cols, rows int, env []string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -51,44 +56,37 @@ func (p *Pane) Start(shellPath string, cols, rows int, env []string) error {
 		}
 	}
 
+	if cols < 2 {
+		cols = 80
+	}
+	if rows < 2 {
+		rows = 24
+	}
+
 	p.Bounds = bsp.Rect{W: cols, H: rows}
 
-	// Prepare command
-	cmd := exec.Command(shellPath)
+	// Launch as interactive login shell
+	cmd := exec.Command(shellPath, "-l")
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Env = append(cmd.Env,
 		fmt.Sprintf("DAJIMUX_PANE_ID=%s", p.ID),
-		fmt.Sprintf("TERM=%s", "xterm-256color"),
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
 	)
 
-	// Open pseudoterminal master & slave
-	master, slave, err := openPTY()
+	// Start with PTY sizing and controlling terminal setup via creack/pty
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
+		Cols: uint16(cols),
+		Rows: uint16(rows),
+	})
 	if err != nil {
-		return fmt.Errorf("openpty: %w", err)
+		return fmt.Errorf("pty.StartWithSize: %w", err)
 	}
 
-	p.PTY = master
-	cmd.Stdin = slave
-	cmd.Stdout = slave
-	cmd.Stderr = slave
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true,
-	}
-
-	if err := cmd.Start(); err != nil {
-		master.Close()
-		slave.Close()
-		return fmt.Errorf("cmd.Start: %w", err)
-	}
-
-	// Slave fd is owned by child process now; close in parent
-	slave.Close()
+	p.PTY = ptmx
 	p.Cmd = cmd
 
-	// Set initial window size
-	p.setWindowSize(cols, rows)
-
-	// Stream PTY output into scrollback buffer and OutputCh
+	// Stream PTY output into raw replay buffer and registered listeners
 	go p.readLoop()
 
 	// Supervise process exit
@@ -100,7 +98,7 @@ func (p *Pane) Start(shellPath string, cols, rows int, env []string) error {
 	return nil
 }
 
-// readLoop reads raw stdout from master PTY and preserves scrollback.
+// readLoop reads raw stdout from master PTY and broadcasts to listeners.
 func (p *Pane) readLoop() {
 	buf := make([]byte, 4096)
 	lineBuf := strings.Builder{}
@@ -111,11 +109,21 @@ func (p *Pane) readLoop() {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
 
-			// Broadcast raw bytes to daemon compositor
-			select {
-			case p.OutputCh <- chunk:
-			default:
+			p.mu.Lock()
+			// Append to raw ANSI replay buffer
+			p.rawBuffer = append(p.rawBuffer, chunk...)
+			if len(p.rawBuffer) > p.maxRawBytes {
+				p.rawBuffer = p.rawBuffer[len(p.rawBuffer)-p.maxRawBytes:]
 			}
+
+			// Broadcast to all active attached client listeners
+			for ch := range p.listeners {
+				select {
+				case ch <- chunk:
+				default:
+				}
+			}
+			p.mu.Unlock()
 
 			// Parse clean lines for agent capture / scrollback
 			for _, b := range chunk {
@@ -130,11 +138,34 @@ func (p *Pane) readLoop() {
 
 		if err != nil {
 			if err != io.EOF {
-				// PTY closed
+				// Master closed or child exited
 			}
 			break
 		}
 	}
+}
+
+// AddListener registers a channel to receive real-time PTY chunks.
+func (p *Pane) AddListener(ch chan []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.listeners[ch] = struct{}{}
+}
+
+// RemoveListener unregisters a channel.
+func (p *Pane) RemoveListener(ch chan []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.listeners, ch)
+}
+
+// GetRawBuffer returns a copy of the recent ANSI output history.
+func (p *Pane) GetRawBuffer() []byte {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	res := make([]byte, len(p.rawBuffer))
+	copy(res, p.rawBuffer)
+	return res
 }
 
 func (p *Pane) appendScrollback(line string) {
@@ -178,34 +209,24 @@ func (p *Pane) Write(data []byte) (int, error) {
 func (p *Pane) Resize(cols, rows int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if cols < 2 {
+		cols = 2
+	}
+	if rows < 2 {
+		rows = 2
+	}
+
 	p.Bounds.W = cols
 	p.Bounds.H = rows
-	return p.setWindowSize(cols, rows)
-}
 
-func (p *Pane) setWindowSize(cols, rows int) error {
 	if p.PTY == nil {
 		return nil
 	}
-	ws := struct {
-		Rows    uint16
-		Cols    uint16
-		Xpixels uint16
-		Ypixels uint16
-	}{
-		Rows: uint16(rows),
+	return pty.Setsize(p.PTY, &pty.Winsize{
 		Cols: uint16(cols),
-	}
-	_, _, errno := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		p.PTY.Fd(),
-		syscall.TIOCSWINSZ,
-		uintptr(unsafePointer(&ws)),
-	)
-	if errno != 0 {
-		return errno
-	}
-	return nil
+		Rows: uint16(rows),
+	})
 }
 
 // Close terminates the pane process and releases PTY fds.
@@ -224,37 +245,5 @@ func (p *Pane) Close() error {
 	if p.PTY != nil {
 		_ = p.PTY.Close()
 	}
-	close(p.OutputCh)
 	return nil
-}
-
-// Helper to open PTY without Cgo dependency
-func openPTY() (*os.File, *os.File, error) {
-	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	sname, err := ptsname(master)
-	if err != nil {
-		master.Close()
-		return nil, nil, err
-	}
-
-	if err := grantpt(master); err != nil {
-		master.Close()
-		return nil, nil, err
-	}
-	if err := unlockpt(master); err != nil {
-		master.Close()
-		return nil, nil, err
-	}
-
-	slave, err := os.OpenFile(sname, os.O_RDWR|syscall.O_NOCTTY, 0)
-	if err != nil {
-		master.Close()
-		return nil, nil, err
-	}
-
-	return master, slave, nil
 }
