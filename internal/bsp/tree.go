@@ -304,37 +304,79 @@ func (t *Tree) FindNeighbor(currentPaneID string, dir NavDirection) string {
 		return currentPaneID
 	}
 
-	cx, cy := current.Rect.Center()
+	cRect := current.Rect
+	cx, cy := cRect.Center()
 	leaves := t.collectLeafNodes(t.Root)
 
 	var bestCandidate string
-	minDist := math.MaxFloat64
+	minScore := math.MaxFloat64
 
 	for _, leaf := range leaves {
 		if leaf.PaneID == currentPaneID {
 			continue
 		}
 
-		lx, ly := leaf.Rect.Center()
-		dx := lx - cx
-		dy := ly - cy
+		lRect := leaf.Rect
+		lx, ly := lRect.Center()
 
-		isCandidate := false
+		var primaryDist float64
+		var orthoDist float64
+		var isCandidate bool
+
 		switch dir {
 		case NavLeft:
-			isCandidate = dx < 0 && math.Abs(dx) >= math.Abs(dy)*0.5
+			isCandidate = lx < cx && lRect.X < cRect.X
+			if isCandidate {
+				primaryDist = cx - lx
+				overlapY := math.Max(0, math.Min(float64(cRect.Y+cRect.H), float64(lRect.Y+lRect.H))-math.Max(float64(cRect.Y), float64(lRect.Y)))
+				if overlapY > 0 {
+					orthoDist = 0
+				} else {
+					orthoDist = math.Min(math.Abs(float64(lRect.Y+lRect.H-cRect.Y)), math.Abs(float64(cRect.Y+cRect.H-lRect.Y)))
+				}
+			}
+
 		case NavRight:
-			isCandidate = dx > 0 && math.Abs(dx) >= math.Abs(dy)*0.5
+			isCandidate = lx > cx && (lRect.X+lRect.W) > (cRect.X+cRect.W)
+			if isCandidate {
+				primaryDist = lx - cx
+				overlapY := math.Max(0, math.Min(float64(cRect.Y+cRect.H), float64(lRect.Y+lRect.H))-math.Max(float64(cRect.Y), float64(lRect.Y)))
+				if overlapY > 0 {
+					orthoDist = 0
+				} else {
+					orthoDist = math.Min(math.Abs(float64(lRect.Y+lRect.H-cRect.Y)), math.Abs(float64(cRect.Y+cRect.H-lRect.Y)))
+				}
+			}
+
 		case NavUp:
-			isCandidate = dy < 0 && math.Abs(dy) >= math.Abs(dx)*0.5
+			isCandidate = ly < cy && lRect.Y < cRect.Y
+			if isCandidate {
+				primaryDist = cy - ly
+				overlapX := math.Max(0, math.Min(float64(cRect.X+cRect.W), float64(lRect.X+lRect.W))-math.Max(float64(cRect.X), float64(lRect.X)))
+				if overlapX > 0 {
+					orthoDist = 0
+				} else {
+					orthoDist = math.Min(math.Abs(float64(lRect.X+lRect.W-cRect.X)), math.Abs(float64(cRect.X+cRect.W-lRect.X)))
+				}
+			}
+
 		case NavDown:
-			isCandidate = dy > 0 && math.Abs(dy) >= math.Abs(dx)*0.5
+			isCandidate = ly > cy && (lRect.Y+lRect.H) > (cRect.Y+cRect.H)
+			if isCandidate {
+				primaryDist = ly - cy
+				overlapX := math.Max(0, math.Min(float64(cRect.X+cRect.W), float64(lRect.X+lRect.W))-math.Max(float64(cRect.X), float64(lRect.X)))
+				if overlapX > 0 {
+					orthoDist = 0
+				} else {
+					orthoDist = math.Min(math.Abs(float64(lRect.X+lRect.W-cRect.X)), math.Abs(float64(cRect.X+cRect.W-lRect.X)))
+				}
+			}
 		}
 
 		if isCandidate {
-			dist := dx*dx + dy*dy
-			if dist < minDist {
-				minDist = dist
+			score := primaryDist + orthoDist*100.0
+			if score < minScore {
+				minScore = score
 				bestCandidate = leaf.PaneID
 			}
 		}

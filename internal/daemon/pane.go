@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -73,8 +72,7 @@ func (p *Pane) Start(shellPath string, cols, rows int, env []string) error {
 	cmd.Stdout = slave
 	cmd.Stderr = slave
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-		Setsid:  true,
+		Setsid: true,
 	}
 
 	if err := cmd.Start(); err != nil {

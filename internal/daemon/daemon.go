@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 
 	"github.com/SujanPoudel1080/dajimux/internal/bsp"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
