@@ -31,13 +31,22 @@ const (
 	ActionToggleMonocle   ActionType = "toggle_monocle"
 	ActionSwitchWorkspace ActionType = "switch_workspace"
 	ActionResizeDelta     ActionType = "resize_delta"
-	ActionOpenPalette     ActionType = "open_palette"
-	ActionClosePalette    ActionType = "close_palette"
-	ActionPaletteType     ActionType = "palette_type"
+	ActionOpenPalette      ActionType = "open_palette"
+	ActionClosePalette     ActionType = "close_palette"
+	ActionPaletteType      ActionType = "palette_type"
 	ActionPaletteBackspace ActionType = "palette_backspace"
-	ActionPaletteUp       ActionType = "palette_up"
-	ActionPaletteDown     ActionType = "palette_down"
-	ActionExecutePalette  ActionType = "palette_execute"
+	ActionPaletteUp        ActionType = "palette_up"
+	ActionPaletteDown      ActionType = "palette_down"
+	ActionExecutePalette   ActionType = "palette_execute"
+	ActionEnterScrollback  ActionType = "enter_scrollback"
+	ActionExitScrollback   ActionType = "exit_scrollback"
+	ActionScrollUp         ActionType = "scroll_up"
+	ActionScrollDown       ActionType = "scroll_down"
+	ActionScrollPageUp     ActionType = "scroll_page_up"
+	ActionScrollPageDown   ActionType = "scroll_page_down"
+	ActionScrollTop        ActionType = "scroll_top"
+	ActionScrollBottom     ActionType = "scroll_bottom"
+	ActionYank             ActionType = "yank"
 )
 
 // InputResult contains the outcome of processing user keystrokes.
@@ -71,6 +80,8 @@ func (h *InputHandler) HandleKey(data []byte) InputResult {
 		return h.handleNormalMode(data)
 	case protocol.ModeResize:
 		return h.handleResizeMode(data)
+	case protocol.ModeScrollback:
+		return h.handleScrollbackMode(data)
 	case protocol.ModeCommandPalette:
 		return h.handlePaletteMode(data)
 	default:
@@ -145,6 +156,9 @@ func (h *InputHandler) handleNormalMode(data []byte) InputResult {
 		case ':', ' ': // Open Command Palette
 			h.CurrentMode = protocol.ModeCommandPalette
 			return InputResult{Action: ActionOpenPalette, TargetMode: protocol.ModeCommandPalette}
+		case '[', 0x15: // Enter Scrollback Vi-Mode
+			h.CurrentMode = protocol.ModeScrollback
+			return InputResult{Action: ActionEnterScrollback, TargetMode: protocol.ModeScrollback}
 		}
 
 		// Workspace Switching: '1' through '9'
@@ -154,6 +168,44 @@ func (h *InputHandler) handleNormalMode(data []byte) InputResult {
 				Action:       ActionSwitchWorkspace,
 				WorkspaceNum: ws,
 			}
+		}
+	}
+
+	return InputResult{Action: ActionNone}
+}
+
+func (h *InputHandler) handleScrollbackMode(data []byte) InputResult {
+	if len(data) == 1 {
+		b := data[0]
+
+		// Exit Scrollback mode on q, Esc (0x1b), or Enter
+		if b == 'q' || b == 0x1b || b == '\r' || b == '\n' {
+			h.CurrentMode = protocol.ModeNormal
+			return InputResult{Action: ActionExitScrollback, TargetMode: protocol.ModeNormal}
+		}
+
+		switch b {
+		case 'k': // Scroll up 1 line
+			return InputResult{Action: ActionScrollUp}
+		case 'j': // Scroll down 1 line
+			return InputResult{Action: ActionScrollDown}
+		case 0x15: // Ctrl-u (Page up)
+			return InputResult{Action: ActionScrollPageUp}
+		case 0x04: // Ctrl-d (Page down)
+			return InputResult{Action: ActionScrollPageDown}
+		case 'g': // Jump to top
+			return InputResult{Action: ActionScrollTop}
+		case 'G': // Jump to bottom
+			return InputResult{Action: ActionScrollBottom}
+		case 'y': // Yank visible text to system clipboard via OSC 52
+			return InputResult{Action: ActionYank}
+		}
+	} else if len(data) == 3 && data[0] == 0x1b && data[1] == '[' {
+		switch data[2] {
+		case 'A': // Up arrow
+			return InputResult{Action: ActionScrollUp}
+		case 'B': // Down arrow
+			return InputResult{Action: ActionScrollDown}
 		}
 	}
 

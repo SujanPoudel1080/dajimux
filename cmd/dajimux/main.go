@@ -11,6 +11,7 @@ import (
 
 	"github.com/SujanPoudel1080/dajimux/internal/client"
 	"github.com/SujanPoudel1080/dajimux/internal/daemon"
+	"github.com/SujanPoudel1080/dajimux/internal/peer"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
 )
 
@@ -47,6 +48,9 @@ func main() {
 	case "pane":
 		runPaneCmd(os.Args[2:])
 
+	case "peer":
+		runPeerCmd(os.Args[2:])
+
 	case "help", "--help", "-h":
 		printHelp()
 
@@ -70,6 +74,8 @@ Usage:
   dajimux agent status [flags] Report agent state & telemetry badge
   dajimux msg send [flags]     Send message to another pane or channel
   dajimux pane capture [flags] Capture lines from a sibling pane
+  dajimux peer listen [flags]  Listen for incoming peer connections
+  dajimux peer connect <addr>  Connect to a remote dajimux peer session
   dajimux version              Print version information
 
 Vim Modal Controls:
@@ -295,4 +301,95 @@ func sendEnvelopeOnce(sockPath string, env protocol.Envelope) error {
 	}
 	defer conn.Close()
 	return protocol.WriteEnvelope(conn, env)
+}
+
+func runPeerCmd(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: dajimux peer <listen|connect> [flags]")
+		return
+	}
+
+	sub := args[0]
+	switch sub {
+	case "listen":
+		fs := flag.NewFlagSet("peer listen", flag.ExitOnError)
+		addr := fs.String("addr", ":7474", "Peering TCP address to listen on")
+		token := fs.String("token", os.Getenv("DAJIMUX_PEER_TOKEN"), "Secret authentication token")
+		nodeName := fs.String("name", "", "Node identifier")
+		sockPath := fs.String("socket", daemon.DefaultSocketPath(), "Path to local daemon socket")
+		_ = fs.Parse(args[1:])
+
+		if *nodeName == "" {
+			hostname, _ := os.Hostname()
+			if hostname == "" {
+				hostname = "dajimux-host"
+			}
+			*nodeName = hostname
+		}
+
+		if !isDaemonRunning(*sockPath) {
+			fmt.Printf("Notice: Local daemon at %s is not currently responding. Incoming peers will connect once daemon is active.\n", *sockPath)
+		}
+
+		server := peer.NewServer(*addr, *token, *nodeName, func(peerNode string, conn net.Conn) {
+			_ = peer.TunnelToUnix(conn, *sockPath)
+		})
+
+		if err := server.Listen(); err != nil {
+			fmt.Fprintf(os.Stderr, "Peer listen failed: %v\n", err)
+			os.Exit(1)
+		}
+		defer server.Close()
+
+		fmt.Printf("dajimux peer listening on %s (node: %s)\n", server.ListenerAddr(), *nodeName)
+		if err := server.Serve(); err != nil {
+			fmt.Fprintf(os.Stderr, "Peer server error: %v\n", err)
+		}
+
+	case "connect":
+		if len(args) < 2 {
+			fmt.Println("Usage: dajimux peer connect <address> [--token <secret>] [--name <name>] [session-name]")
+			return
+		}
+		addr := args[1]
+		fs := flag.NewFlagSet("peer connect", flag.ExitOnError)
+		token := fs.String("token", os.Getenv("DAJIMUX_PEER_TOKEN"), "Secret authentication token")
+		nodeName := fs.String("name", "", "Local node identifier")
+		_ = fs.Parse(args[2:])
+
+		sessionName := "main"
+		if fs.NArg() > 0 {
+			sessionName = fs.Arg(0)
+		}
+
+		if *nodeName == "" {
+			hostname, _ := os.Hostname()
+			if hostname == "" {
+				hostname = "dajimux-client"
+			}
+			*nodeName = hostname
+		}
+
+		fmt.Printf("Connecting to dajimux peer at %s...\n", addr)
+		c := peer.NewClient(addr, *token, *nodeName)
+		conn, hs, err := c.Connect()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Peer connection failed: %v\n", err)
+			os.Exit(1)
+		}
+		defer conn.Close()
+
+		fmt.Printf("Authenticated with remote node %q (v%s). Attaching to session %q...\n", hs.NodeName, hs.Version, sessionName)
+		time.Sleep(200 * time.Millisecond)
+
+		cli := client.NewClient("", sessionName)
+		if err := cli.RunWithConn(conn); err != nil {
+			fmt.Fprintf(os.Stderr, "dajimux remote session error: %v\n", err)
+			os.Exit(1)
+		}
+
+	default:
+		fmt.Printf("Unknown peer subcommand: %s (expected 'listen' or 'connect')\n", sub)
+		os.Exit(1)
+	}
 }

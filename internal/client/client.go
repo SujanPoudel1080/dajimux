@@ -1,6 +1,7 @@
 package client
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,17 +17,19 @@ import (
 
 // Client manages the terminal UI, raw input mode, and IPC connection to the daemon.
 type Client struct {
-	mu           sync.Mutex
-	SocketPath   string
-	SessionName  string
-	conn         net.Conn
-	inputHandler *InputHandler
-	palette      *Palette
-	lastState    protocol.LayoutStatePayload
-	cols         int
-	rows         int
-	origTerm     *syscall.Termios
-	isRunning    bool
+	mu              sync.Mutex
+	SocketPath      string
+	SessionName     string
+	conn            net.Conn
+	inputHandler    *InputHandler
+	palette         *Palette
+	scrollbackLines []string
+	scrollOffset    int
+	lastState       protocol.LayoutStatePayload
+	cols            int
+	rows            int
+	origTerm        *syscall.Termios
+	isRunning       bool
 }
 
 // NewClient initializes a client for the target session.
@@ -48,6 +51,11 @@ func (c *Client) Run() error {
 	if err != nil {
 		return fmt.Errorf("connect to daemon at %s: %w", c.SocketPath, err)
 	}
+	return c.RunWithConn(conn)
+}
+
+// RunWithConn attaches to the daemon using an established network connection.
+func (c *Client) RunWithConn(conn net.Conn) error {
 	c.conn = conn
 	defer conn.Close()
 
@@ -143,6 +151,15 @@ func (c *Client) readDaemonLoop() {
 				c.inputHandler.CurrentMode = state.Mode
 				c.mu.Unlock()
 				c.renderChrome(state)
+			}
+		case protocol.MsgPaneCaptureRes:
+			var res protocol.PaneCaptureResponse
+			if err := json.Unmarshal(env.Payload, &res); err == nil {
+				c.mu.Lock()
+				c.scrollbackLines = res.Lines
+				c.scrollOffset = 0
+				c.mu.Unlock()
+				c.renderScrollback()
 			}
 		}
 	}
@@ -256,6 +273,96 @@ func (c *Client) readStdinLoop() error {
 				c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeNormal)})
 				c.renderChrome(c.lastState)
 			}
+
+		case ActionEnterScrollback:
+			c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeScrollback)})
+			c.mu.Lock()
+			activeID := c.lastState.ActivePaneID
+			c.mu.Unlock()
+			req := protocol.PaneCaptureRequest{
+				TargetPaneID: activeID,
+				Lines:        1000,
+			}
+			reqData, _ := json.Marshal(req)
+			_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
+				Type:    protocol.MsgPaneCapture,
+				Payload: reqData,
+			})
+
+		case ActionExitScrollback:
+			c.mu.Lock()
+			c.scrollbackLines = nil
+			c.scrollOffset = 0
+			c.mu.Unlock()
+			c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeNormal)})
+			c.renderChrome(c.lastState)
+			req := protocol.ActionPayload{Action: "redraw"}
+			reqData, _ := json.Marshal(req)
+			_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
+				Type:    protocol.MsgAction,
+				Payload: reqData,
+			})
+
+		case ActionScrollUp:
+			c.mu.Lock()
+			maxOffset := len(c.scrollbackLines) - (c.rows - 2)
+			if maxOffset < 0 {
+				maxOffset = 0
+			}
+			if c.scrollOffset < maxOffset {
+				c.scrollOffset++
+			}
+			c.mu.Unlock()
+			c.renderScrollback()
+
+		case ActionScrollDown:
+			c.mu.Lock()
+			if c.scrollOffset > 0 {
+				c.scrollOffset--
+			}
+			c.mu.Unlock()
+			c.renderScrollback()
+
+		case ActionScrollPageUp:
+			c.mu.Lock()
+			maxOffset := len(c.scrollbackLines) - (c.rows - 2)
+			if maxOffset < 0 {
+				maxOffset = 0
+			}
+			c.scrollOffset += 15
+			if c.scrollOffset > maxOffset {
+				c.scrollOffset = maxOffset
+			}
+			c.mu.Unlock()
+			c.renderScrollback()
+
+		case ActionScrollPageDown:
+			c.mu.Lock()
+			c.scrollOffset -= 15
+			if c.scrollOffset < 0 {
+				c.scrollOffset = 0
+			}
+			c.mu.Unlock()
+			c.renderScrollback()
+
+		case ActionScrollTop:
+			c.mu.Lock()
+			maxOffset := len(c.scrollbackLines) - (c.rows - 2)
+			if maxOffset < 0 {
+				maxOffset = 0
+			}
+			c.scrollOffset = maxOffset
+			c.mu.Unlock()
+			c.renderScrollback()
+
+		case ActionScrollBottom:
+			c.mu.Lock()
+			c.scrollOffset = 0
+			c.mu.Unlock()
+			c.renderScrollback()
+
+		case ActionYank:
+			c.yankScrollback()
 		}
 	}
 }
@@ -332,7 +439,10 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	}
 	b.WriteString("\033[0m")
 
-	// 2. Draw Bottom Status Bar (Agent Telemetry & Shortcuts)
+	// 2. Draw Borders and Pane Headers
+	b.WriteString(RenderBorders(state.Panes, cols, rows, state.IsMonocle))
+
+	// 3. Draw Bottom Status Bar (Agent Telemetry & Shortcuts)
 	b.WriteString(fmt.Sprintf("\033[%d;1H", rows)) // Move to last row
 	b.WriteString("\033[48;5;236m\033[38;5;250m")
 
@@ -365,6 +475,95 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	b.WriteString(fmt.Sprintf("\033[%d;%dH", activeY, activeX))
 
 	os.Stdout.WriteString(b.String())
+}
+
+// renderScrollback renders the scrollback buffer lines and navigation footer.
+func (c *Client) renderScrollback() {
+	c.mu.Lock()
+	lines := c.scrollbackLines
+	offset := c.scrollOffset
+	cols := c.cols
+	rows := c.rows
+	c.mu.Unlock()
+
+	var b strings.Builder
+	b.WriteString("\0337") // Save cursor
+
+	viewHeight := rows - 2
+	if viewHeight < 1 {
+		viewHeight = 1
+	}
+
+	totalLines := len(lines)
+	endIdx := totalLines - offset
+	startIdx := endIdx - viewHeight
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if endIdx < 0 {
+		endIdx = 0
+	}
+	if endIdx > totalLines {
+		endIdx = totalLines
+	}
+
+	// Render lines in the viewport
+	row := 2
+	for i := startIdx; i < endIdx && row < rows; i++ {
+		line := lines[i]
+		if len(line) > cols {
+			line = line[:cols]
+		}
+		b.WriteString(fmt.Sprintf("\033[%d;1H\033[2K%s", row, line))
+		row++
+	}
+	// Clear any remaining lines in viewport
+	for ; row < rows; row++ {
+		b.WriteString(fmt.Sprintf("\033[%d;1H\033[2K", row))
+	}
+
+	// Footer banner
+	b.WriteString(fmt.Sprintf("\033[%d;1H\033[48;5;166m\033[38;5;255m", rows)) // Orange banner
+	status := fmt.Sprintf(" -- SCROLLBACK [%d/%d] -- (k/j: line, ^u/^d: page, g/G: top/bottom, y: yank, q: exit) ",
+		totalLines-offset, totalLines)
+	b.WriteString(status)
+	if cols > len(status) {
+		b.WriteString(strings.Repeat(" ", cols-len(status)))
+	}
+	b.WriteString("\033[0m")
+
+	b.WriteString("\0338") // Restore cursor
+	os.Stdout.WriteString(b.String())
+}
+
+// yankScrollback copies visible scrollback lines to the clipboard using OSC 52.
+func (c *Client) yankScrollback() {
+	c.mu.Lock()
+	lines := c.scrollbackLines
+	offset := c.scrollOffset
+	rows := c.rows
+	c.mu.Unlock()
+
+	viewHeight := rows - 2
+	totalLines := len(lines)
+	endIdx := totalLines - offset
+	startIdx := endIdx - viewHeight
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if endIdx > totalLines {
+		endIdx = totalLines
+	}
+
+	var visibleText string
+	if startIdx < endIdx {
+		visibleText = strings.Join(lines[startIdx:endIdx], "\n")
+	}
+
+	if visibleText != "" {
+		b64 := base64.StdEncoding.EncodeToString([]byte(visibleText))
+		fmt.Printf("\033]52;c;%s\a", b64)
+	}
 }
 
 // renderPalette draws an interactive floating overlay box centered on the terminal screen.
