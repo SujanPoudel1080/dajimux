@@ -19,7 +19,9 @@
 - **Kitty Graphics Protocol**:
   - Intercepts and translates `\x1b_G` graphic sequences so inline images render correctly within split panes.
 - **Cross-Machine Peering**:
-  - Secure QUIC/mTLS daemon mesh to access sessions on remote devboxes and servers.
+  - Authenticated TCP peer listener and client to bridge remote devboxes and sessions seamlessly.
+- **Scrollback Vi-Mode & Clipboard**:
+  - Per-pane history review with `k`/`j` line scrolling, `g`/`G` top/bottom jumps, and `y` OSC 52 clipboard copying.
 
 ## Quickstart
 
@@ -35,6 +37,15 @@ dajimux agent status --state "testing" --badge "🟡 Running Pytest"
 
 # Send a message to an agent in another pane
 dajimux msg send --target pane-2 "Schema migration completed"
+
+# Capture the last 50 lines of another pane
+dajimux pane capture --pane pane-1 --lines 50
+
+# Peering: Listen on a remote server
+dajimux peer listen --addr :7474 --token "my-secret-key"
+
+# Peering: Connect from your laptop to the remote server session
+dajimux peer connect remote.devbox.internal:7474 --token "my-secret-key" main
 ```
 
 ## Modal Navigation
@@ -46,10 +57,18 @@ dajimux msg send --target pane-2 "Schema migration completed"
   - `v` : Split pane vertically
   - `x` : Close active pane
   - `z` : Zoom / toggle monocle (maximize pane)
+  - `[` or `Ctrl-u` : Enter Vi Scrollback mode
   - `1` - `9` : Switch workspace
-  - `r` : Enter resize mode
+  - `r` : Enter resize mode (`h`/`j`/`k`/`l` to adjust splits, `Esc`/`Enter` to finish)
   - `i` / `a` / `Enter` : Return to `INSERT` mode
   - `:` or `Space` : Open Command Palette
+
+- In `SCROLLBACK` mode:
+  - `k` / `j` : Scroll up / down 1 line (also Up/Down arrows)
+  - `Ctrl-u` / `Ctrl-d` : Page up / Page down
+  - `g` / `G` : Jump to top / bottom
+  - `y` : Yank visible text to system clipboard via OSC 52
+  - `q` / `Esc` / `Enter` : Exit scrollback mode
 
 ## Architecture
 
