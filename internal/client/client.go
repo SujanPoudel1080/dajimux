@@ -126,8 +126,9 @@ func (c *Client) RunWithConn(conn net.Conn) error {
 }
 
 func (c *Client) readDaemonLoop() {
+	reader := protocol.NewEnvelopeReader(c.conn)
 	for {
-		env, err := protocol.ReadEnvelope(c.conn)
+		env, err := reader.Read()
 		if err != nil {
 			if c.isRunning {
 				c.restoreTerminal()

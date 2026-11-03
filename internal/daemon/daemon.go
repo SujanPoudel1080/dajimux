@@ -20,8 +20,13 @@ type Daemon struct {
 	listener      net.Listener
 	Sessions      map[string]*Session
 	DefaultSession string
-	clients       map[net.Conn]*Session
+	clients       map[net.Conn]*clientEntry
 	isClosing     bool
+}
+
+type clientEntry struct {
+	session *Session
+	writer  *protocol.EnvelopeWriter
 }
 
 // DefaultSocketPath returns the standard socket location for the current user.
@@ -41,7 +46,7 @@ func NewDaemon(socketPath string) *Daemon {
 		SocketPath:     socketPath,
 		Sessions:       make(map[string]*Session),
 		DefaultSession: "main",
-		clients:        make(map[net.Conn]*Session),
+		clients:        make(map[net.Conn]*clientEntry),
 	}
 }
 
@@ -115,9 +120,11 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	var attachedSession *Session
+	reader := protocol.NewEnvelopeReader(conn)
+	writer := protocol.NewEnvelopeWriter(conn)
 
 	for {
-		env, err := protocol.ReadEnvelope(conn)
+		env, err := reader.Read()
 		if err != nil {
 			break
 		}
@@ -134,7 +141,7 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 				if err == nil {
 					attachedSession = session
 					d.mu.Lock()
-					d.clients[conn] = session
+					d.clients[conn] = &clientEntry{session: session, writer: writer}
 					d.mu.Unlock()
 
 					// Resize session to match connected client terminal dimensions
@@ -145,13 +152,13 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 					// Send current layout state to newly attached client
 					state := session.GetLayoutState()
 					data, _ := json.Marshal(state)
-					_ = protocol.WriteEnvelope(conn, protocol.Envelope{
+					_ = writer.Write(protocol.Envelope{
 						Type:    protocol.MsgLayoutState,
 						Payload: data,
 					})
 
 					// Forward PTY output from active pane to this client
-					go d.streamPaneOutput(conn, session)
+					go d.streamPaneOutput(writer, session)
 				}
 			}
 
@@ -203,7 +210,7 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 				if err := json.Unmarshal(env.Payload, &p); err == nil {
 					msg := sess.Broker.Send(p.FromPaneID, p.ToTarget, p.Content)
 					data, _ := json.Marshal(msg)
-					_ = protocol.WriteEnvelope(conn, protocol.Envelope{
+					_ = writer.Write(protocol.Envelope{
 						Type:    protocol.MsgAgentSend,
 						Payload: data,
 					})
@@ -231,7 +238,7 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 						Lines:        lines,
 					}
 					data, _ := json.Marshal(res)
-					_ = protocol.WriteEnvelope(conn, protocol.Envelope{
+					_ = writer.Write(protocol.Envelope{
 						Type:    protocol.MsgPaneCaptureRes,
 						Payload: data,
 					})
@@ -259,7 +266,7 @@ func (d *Daemon) getSessionForRequest(sessionID string) *Session {
 	return d.Sessions[d.DefaultSession]
 }
 
-func (d *Daemon) streamPaneOutput(conn net.Conn, s *Session) {
+func (d *Daemon) streamPaneOutput(writer *protocol.EnvelopeWriter, s *Session) {
 	outCh := make(chan []byte, 64)
 	var currentSubscribed *Pane
 
@@ -275,7 +282,7 @@ func (d *Daemon) streamPaneOutput(conn net.Conn, s *Session) {
 			if len(history) > 0 {
 				f := protocol.FrameUpdatePayload{ANSI: history}
 				payload, _ := json.Marshal(f)
-				_ = protocol.WriteEnvelope(conn, protocol.Envelope{
+				_ = writer.Write(protocol.Envelope{
 					Type:    protocol.MsgFrameUpdate,
 					Payload: payload,
 				})
@@ -302,7 +309,7 @@ func (d *Daemon) streamPaneOutput(conn net.Conn, s *Session) {
 			}
 			f := protocol.FrameUpdatePayload{ANSI: data}
 			payload, _ := json.Marshal(f)
-			if err := protocol.WriteEnvelope(conn, protocol.Envelope{
+			if err := writer.Write(protocol.Envelope{
 				Type:    protocol.MsgFrameUpdate,
 				Payload: payload,
 			}); err != nil {
@@ -369,9 +376,9 @@ func (d *Daemon) broadcastLayoutState(sessionName string, state protocol.LayoutS
 		Payload: data,
 	}
 
-	for conn, sess := range d.clients {
-		if sess.Name == sessionName {
-			_ = protocol.WriteEnvelope(conn, env)
+	for _, entry := range d.clients {
+		if entry.session.Name == sessionName {
+			_ = entry.writer.Write(env)
 		}
 	}
 }

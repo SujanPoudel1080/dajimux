@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 )
 
 // MessageType indicates the type of IPC message payload.
@@ -132,6 +133,32 @@ type PaneCaptureResponse struct {
 	Lines        []string `json:"lines"`
 }
 
+// EnvelopeWriter provides synchronized writes so multiple goroutines can
+// safely send envelopes on the same connection without interleaving bytes.
+type EnvelopeWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+// NewEnvelopeWriter creates a thread-safe envelope writer.
+func NewEnvelopeWriter(w io.Writer) *EnvelopeWriter {
+	return &EnvelopeWriter{w: w}
+}
+
+// Write serializes and sends one envelope atomically.
+func (ew *EnvelopeWriter) Write(env Envelope) error {
+	data, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal envelope: %w", err)
+	}
+	data = append(data, '\n')
+
+	ew.mu.Lock()
+	_, err = ew.w.Write(data)
+	ew.mu.Unlock()
+	return err
+}
+
 // WriteEnvelope writes a JSON-encoded envelope followed by a newline delimiter.
 func WriteEnvelope(w io.Writer, env Envelope) error {
 	data, err := json.Marshal(env)
@@ -143,7 +170,29 @@ func WriteEnvelope(w io.Writer, env Envelope) error {
 	return err
 }
 
+// EnvelopeReader wraps a persistent json.Decoder so buffered bytes are never lost
+// between successive reads on the same connection.
+type EnvelopeReader struct {
+	dec *json.Decoder
+}
+
+// NewEnvelopeReader creates a reader that should be reused for the lifetime of a connection.
+func NewEnvelopeReader(r io.Reader) *EnvelopeReader {
+	return &EnvelopeReader{dec: json.NewDecoder(r)}
+}
+
+// Read decodes the next envelope from the stream.
+func (er *EnvelopeReader) Read() (*Envelope, error) {
+	var env Envelope
+	if err := er.dec.Decode(&env); err != nil {
+		return nil, err
+	}
+	return &env, nil
+}
+
 // ReadEnvelope reads a newline-delimited JSON envelope from the reader.
+// WARNING: Creates a new decoder each call — only safe for single-shot reads
+// (e.g. one-off CLI commands). For persistent connections, use EnvelopeReader.
 func ReadEnvelope(r io.Reader) (*Envelope, error) {
 	var env Envelope
 	dec := json.NewDecoder(r)
