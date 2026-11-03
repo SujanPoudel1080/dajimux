@@ -142,7 +142,8 @@ func (c *Client) readDaemonLoop() {
 		case protocol.MsgFrameUpdate:
 			var frame protocol.FrameUpdatePayload
 			if err := json.Unmarshal(env.Payload, &frame); err == nil {
-				os.Stdout.Write(frame.ANSI)
+				rewritten := c.rewriteFrame(frame.ANSI)
+				os.Stdout.Write(rewritten)
 			}
 		case protocol.MsgLayoutState:
 			var state protocol.LayoutStatePayload
@@ -164,6 +165,33 @@ func (c *Client) readDaemonLoop() {
 			}
 		}
 	}
+}
+
+// rewriteFrame rewrites PTY output through the ANSI compositor so cursor
+// moves from the pane shell land inside the pane's viewport on the screen.
+func (c *Client) rewriteFrame(ansi []byte) []byte {
+	c.mu.Lock()
+	state := c.lastState
+	rows := c.rows
+	c.mu.Unlock()
+
+	// Find active pane bounds
+	offX, offY, w, h := 1, 2, 80, rows-2
+	for _, p := range state.Panes {
+		if p.IsActive {
+			offX = p.X + 1   // BSP rect is 0-based, terminal is 1-based
+			offY = p.Y + 2   // +1 for top chrome row, +1 for 1-based
+			w = p.W
+			h = p.H
+			break
+		}
+	}
+	if h < 1 {
+		h = 1
+	}
+
+	comp := NewANSICompositor(offX, offY, w, h)
+	return comp.Rewrite(ansi)
 }
 
 func (c *Client) readStdinLoop() error {
@@ -468,7 +496,7 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	activeX := 1
 	for _, p := range state.Panes {
 		if p.IsActive {
-			activeY = p.Y + 1
+			activeY = p.Y + 2 // +1 for chrome, +1 for 1-based
 			activeX = p.X + 1
 			break
 		}
