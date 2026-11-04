@@ -25,6 +25,41 @@
 - **Scrollback Vi-Mode & Clipboard**:
   - Per-pane history review with `k`/`j` line scrolling, `g`/`G` top/bottom jumps, and `y` OSC 52 clipboard copying.
 
+## Installation
+
+### macOS & Linux (One-Line Installer)
+
+Install the latest precompiled static binary directly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SujanPoudel1080/dajimux/main/install.sh | bash
+```
+
+### Homebrew (macOS & Linuxbrew)
+
+```bash
+brew tap SujanPoudel1080/tap
+brew install dajimux
+```
+
+### Linux Packages (.deb / .rpm)
+
+Download prebuilt `.deb` or `.rpm` packages from the [GitHub Releases](https://github.com/SujanPoudel1080/dajimux/releases):
+
+```bash
+# Ubuntu / Debian
+sudo dpkg -i dajimux_*_linux_amd64.deb
+
+# Fedora / RHEL
+sudo rpm -i dajimux_*_linux_amd64.rpm
+```
+
+### Go Install
+
+```bash
+go install github.com/SujanPoudel1080/dajimux/cmd/dajimux@latest
+```
+
 ## Quickstart
 
 ```bash

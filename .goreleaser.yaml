@@ -1,0 +1,79 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: dajimux
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: dajimux
+    main: ./cmd/dajimux
+    binary: dajimux
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.gz
+    files:
+      - README.md
+      - LICENSE
+
+nfpms:
+  - id: packages
+    package_name: dajimux
+    file_name_template: "{{ .ConventionalFileName }}"
+    vendor: Sujan Poudel
+    homepage: https://github.com/SujanPoudel1080/dajimux
+    maintainer: Sujan Poudel <sujanpoudel1080@gmail.com>
+    description: Modern terminal multiplexer and window manager with Vim ergonomics, Kitty graphics, and AI mesh
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/local/bin
+
+brews:
+  - name: dajimux
+    repository:
+      owner: SujanPoudel1080
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/SujanPoudel1080/dajimux
+    description: "Modern terminal multiplexer and window manager with Vim ergonomics, Kitty graphics, and AI mesh"
+    license: MIT
+    test: |
+      system "#{bin}/dajimux", "version"
+    install: |
+      bin.install "dajimux"
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - 'Merge pull request'

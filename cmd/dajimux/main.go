@@ -15,7 +15,11 @@ import (
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
 )
 
-const version = "0.1.0"
+var (
+	version = "0.1.0"
+	commit  = "dev"
+	date    = "unknown"
+)
 
 func main() {
 	if len(os.Args) < 2 {
@@ -27,7 +31,7 @@ func main() {
 
 	switch cmd {
 	case "version", "--version", "-v":
-		fmt.Printf("dajimux v%s (built for SujanPoudel1080)\n", version)
+		fmt.Printf("dajimux v%s (commit: %s, built: %s)\n", version, commit, date)
 
 	case "daemon":
 		runDaemonCmd(os.Args[2:])
