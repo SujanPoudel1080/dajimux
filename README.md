@@ -2,6 +2,8 @@
 
 > Modern terminal multiplexer & window manager with vim-like modal interface, BSP tiling, Kitty graphics support, and an agent mesh protocol.
 
+![dajimux Preview](assets/screenshot2_bsp_tiling.png)
+
 ## Features
 
 - **Daemon-Client Architecture**: Sessions stay alive across disconnects and terminal restarts.
@@ -55,6 +57,8 @@ dajimux peer connect remote.devbox.internal:7474 --token "my-secret-key" main
 ```
 
 ## Modal Navigation
+
+![dajimux Modal Ergonomics](assets/screenshot1_modal_interface.png)
 
 - **Double-Tap `Space`**: Switch from `INSERT` mode to `NORMAL` mode.
 - In `NORMAL` mode:
