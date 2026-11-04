@@ -245,6 +245,51 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 				}
 			}
 
+		case protocol.MsgListSessions:
+			d.mu.RLock()
+			var summaries []protocol.SessionSummary
+			for name, sess := range d.Sessions {
+				sess.mu.RLock()
+				wsCount := len(sess.Workspaces)
+				panesCount := len(sess.Panes)
+				activeWS := sess.ActiveWS
+				sess.mu.RUnlock()
+
+				clientCount := 0
+				for _, entry := range d.clients {
+					if entry.session != nil && entry.session.Name == name {
+						clientCount++
+					}
+				}
+
+				summaries = append(summaries, protocol.SessionSummary{
+					Name:            name,
+					WorkspacesCount: wsCount,
+					PanesCount:      panesCount,
+					ActiveWorkspace: activeWS,
+					AttachedClients: clientCount,
+				})
+			}
+			d.mu.RUnlock()
+
+			resData, _ := json.Marshal(protocol.ListSessionsResponse{Sessions: summaries})
+			_ = writer.Write(protocol.Envelope{
+				Type:    protocol.MsgListSessionsRes,
+				Payload: resData,
+			})
+
+		case protocol.MsgStopServer:
+			_ = writer.Write(protocol.Envelope{
+				Type:    protocol.MsgStopServerRes,
+				Payload: []byte(`"ok"`),
+			})
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				d.Stop()
+				os.Exit(0)
+			}()
+			return
+
 		case protocol.MsgDetach:
 			return
 		}

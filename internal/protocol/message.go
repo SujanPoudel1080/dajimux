@@ -25,11 +25,17 @@ const (
 	MsgError         MessageType = "error"
 
 	// Agent Mesh Protocol
-	MsgAgentStatus   MessageType = "agent_status"
-	MsgAgentSend     MessageType = "agent_send"
+	MsgAgentStatus    MessageType = "agent_status"
+	MsgAgentSend      MessageType = "agent_send"
 	MsgAgentBroadcast MessageType = "agent_broadcast"
-	MsgPaneCapture   MessageType = "pane_capture"
+	MsgPaneCapture    MessageType = "pane_capture"
 	MsgPaneCaptureRes MessageType = "pane_capture_res"
+
+	// Session & Server Management
+	MsgListSessions    MessageType = "list_sessions"
+	MsgListSessionsRes MessageType = "list_sessions_res"
+	MsgStopServer      MessageType = "stop_server"
+	MsgStopServerRes   MessageType = "stop_server_res"
 )
 
 // Mode represents the current modal state.
@@ -131,6 +137,20 @@ type PaneCaptureRequest struct {
 type PaneCaptureResponse struct {
 	TargetPaneID string   `json:"target_pane_id"`
 	Lines        []string `json:"lines"`
+}
+
+// SessionSummary represents a high-level overview of an active session.
+type SessionSummary struct {
+	Name            string `json:"name"`
+	WorkspacesCount int    `json:"workspaces_count"`
+	PanesCount      int    `json:"panes_count"`
+	ActiveWorkspace int    `json:"active_workspace"`
+	AttachedClients int    `json:"attached_clients"`
+}
+
+// ListSessionsResponse contains the list of all active sessions in the daemon.
+type ListSessionsResponse struct {
+	Sessions []SessionSummary `json:"sessions"`
 }
 
 // EnvelopeWriter provides synchronized writes so multiple goroutines can

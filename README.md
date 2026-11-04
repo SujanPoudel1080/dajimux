@@ -29,8 +29,14 @@
 # Launch dajimux (spawns daemon in background if not running)
 dajimux
 
-# Launch a named session
+# List active sessions and connected clients
+dajimux list
+
+# Launch or attach to a named session
 dajimux attach my-project
+
+# Stop the background daemon and all running sessions
+dajimux stop
 
 # Send status update from inside an agent pane
 dajimux agent status --state "testing" --badge "🟡 Running Pytest"
@@ -57,6 +63,7 @@ dajimux peer connect remote.devbox.internal:7474 --token "my-secret-key" main
   - `v` : Split pane vertically
   - `x` : Close active pane
   - `z` : Zoom / toggle monocle (maximize pane)
+  - `d` : Detach from session (leaves daemon running in background)
   - `[` or `Ctrl-u` : Enter Vi Scrollback mode
   - `1` - `9` : Switch workspace
   - `r` : Enter resize mode (`h`/`j`/`k`/`l` to adjust splits, `Esc`/`Enter` to finish)

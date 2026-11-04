@@ -392,8 +392,40 @@ func (c *Client) readStdinLoop() error {
 
 		case ActionYank:
 			c.yankScrollback()
+
+		case ActionDetach:
+			c.detach()
+			return nil
 		}
 	}
+}
+
+func (c *Client) detach() {
+	_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
+		Type: protocol.MsgDetach,
+	})
+	c.mu.Lock()
+	c.isRunning = false
+	c.mu.Unlock()
+	c.restoreTerminal()
+	fmt.Printf("\n[dajimux: detached from session '%s']\n", c.SessionName)
+	os.Exit(0)
+}
+
+func (c *Client) enterScrollback() {
+	c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeScrollback)})
+	c.mu.Lock()
+	activeID := c.lastState.ActivePaneID
+	c.mu.Unlock()
+	req := protocol.PaneCaptureRequest{
+		TargetPaneID: activeID,
+		Lines:        1000,
+	}
+	reqData, _ := json.Marshal(req)
+	_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
+		Type:    protocol.MsgPaneCapture,
+		Payload: reqData,
+	})
 }
 
 func (c *Client) executePaletteItem(item PaletteItem) {
@@ -412,6 +444,10 @@ func (c *Client) executePaletteItem(item PaletteItem) {
 		})
 	case ActionModeChange:
 		c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeResize)})
+	case ActionEnterScrollback:
+		c.enterScrollback()
+	case ActionDetach:
+		c.detach()
 	}
 }
 

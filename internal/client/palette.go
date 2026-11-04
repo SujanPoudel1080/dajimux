@@ -29,6 +29,8 @@ func DefaultPaletteItems() []PaletteItem {
 		{ID: "close", Title: "Close Pane", Description: "Terminate process and close pane", Action: ActionClosePane},
 		{ID: "zoom", Title: "Toggle Monocle (Zoom)", Description: "Maximize or restore current pane", Action: ActionToggleMonocle},
 		{ID: "resize", Title: "Resize Mode", Description: "Fine-tune pane split ratios", Action: ActionModeChange},
+		{ID: "scrollback", Title: "Scrollback Mode", Description: "Browse scrollback history and copy text", Action: ActionEnterScrollback},
+		{ID: "detach", Title: "Detach Session", Description: "Disconnect client and keep session running in daemon", Action: ActionDetach},
 		{ID: "ws1", Title: "Go to Workspace 1", Description: "Switch to workspace 1", Action: ActionSwitchWorkspace, Workspace: 1},
 		{ID: "ws2", Title: "Go to Workspace 2", Description: "Switch to workspace 2", Action: ActionSwitchWorkspace, Workspace: 2},
 		{ID: "ws3", Title: "Go to Workspace 3", Description: "Switch to workspace 3", Action: ActionSwitchWorkspace, Workspace: 3},

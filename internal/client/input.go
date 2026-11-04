@@ -47,6 +47,7 @@ const (
 	ActionScrollTop        ActionType = "scroll_top"
 	ActionScrollBottom     ActionType = "scroll_bottom"
 	ActionYank             ActionType = "yank"
+	ActionDetach           ActionType = "detach"
 )
 
 // InputResult contains the outcome of processing user keystrokes.
@@ -159,6 +160,8 @@ func (h *InputHandler) handleNormalMode(data []byte) InputResult {
 		case '[', 0x15: // Enter Scrollback Vi-Mode
 			h.CurrentMode = protocol.ModeScrollback
 			return InputResult{Action: ActionEnterScrollback, TargetMode: protocol.ModeScrollback}
+		case 'd', 'D': // Detach Session
+			return InputResult{Action: ActionDetach}
 		}
 
 		// Workspace Switching: '1' through '9'

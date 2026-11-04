@@ -48,6 +48,12 @@ func main() {
 	case "pane":
 		runPaneCmd(os.Args[2:])
 
+	case "list", "ls":
+		runListCmd()
+
+	case "kill-server", "stop":
+		runStopServerCmd()
+
 	case "peer":
 		runPeerCmd(os.Args[2:])
 
@@ -69,7 +75,9 @@ func printHelp() {
 
 Usage:
   dajimux [session-name]       Attach to or create a session
+  dajimux list / ls            List active sessions and pane counts
   dajimux daemon               Run the background session daemon
+  dajimux stop / kill-server   Gracefully stop the background daemon
   dajimux attach <name>        Attach to a named session
   dajimux agent status [flags] Report agent state & telemetry badge
   dajimux msg send [flags]     Send message to another pane or channel
@@ -86,6 +94,9 @@ Vim Modal Controls:
     v                          Split pane vertically
     x                          Close focused pane
     z                          Toggle monocle (fullscreen zoom)
+    d                          Detach session (daemon keeps running)
+    [                          Enter scrollback vi-mode
+    : / Space                  Open command palette
     r                          Enter resize mode
     1 - 9                      Switch workspace
     i, a, Enter                Return to INSERT mode
@@ -270,7 +281,8 @@ func runPaneCmd(args []string) {
 			Payload: data,
 		})
 
-		res, err := protocol.ReadEnvelope(conn)
+		reader := protocol.NewEnvelopeReader(conn)
+		res, err := reader.Read()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Read failed: %v\n", err)
 			os.Exit(1)
@@ -392,4 +404,99 @@ func runPeerCmd(args []string) {
 		fmt.Printf("Unknown peer subcommand: %s (expected 'listen' or 'connect')\n", sub)
 		os.Exit(1)
 	}
+}
+
+func runListCmd() {
+	sockPath := os.Getenv("DAJIMUX_SOCK")
+	if sockPath == "" {
+		sockPath = daemon.DefaultSocketPath()
+	}
+
+	if !isDaemonRunning(sockPath) {
+		fmt.Println("No dajimux daemon is running.")
+		return
+	}
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Connect failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+	if err := protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type: protocol.MsgListSessions,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "Request failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	reader := protocol.NewEnvelopeReader(conn)
+	res, err := reader.Read()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Response failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	var listRes protocol.ListSessionsResponse
+	if err := json.Unmarshal(res.Payload, &listRes); err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid response: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(listRes.Sessions) == 0 {
+		fmt.Println("No active sessions.")
+		return
+	}
+
+	for _, s := range listRes.Sessions {
+		attached := ""
+		icon := "○"
+		if s.AttachedClients > 0 {
+			attached = " (attached)"
+			icon = "●"
+		}
+		wsPlural := "workspace"
+		if s.WorkspacesCount != 1 {
+			wsPlural = "workspaces"
+		}
+		panePlural := "pane"
+		if s.PanesCount != 1 {
+			panePlural = "panes"
+		}
+		fmt.Printf("%s %s: %d %s, %d %s%s\n", icon, s.Name, s.WorkspacesCount, wsPlural, s.PanesCount, panePlural, attached)
+	}
+}
+
+func runStopServerCmd() {
+	sockPath := os.Getenv("DAJIMUX_SOCK")
+	if sockPath == "" {
+		sockPath = daemon.DefaultSocketPath()
+	}
+
+	if !isDaemonRunning(sockPath) {
+		fmt.Println("No dajimux daemon is running.")
+		return
+	}
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Connect failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+	if err := protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type: protocol.MsgStopServer,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "Stop request failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	reader := protocol.NewEnvelopeReader(conn)
+	_, _ = reader.Read()
+
+	fmt.Println("dajimux daemon stopped.")
 }

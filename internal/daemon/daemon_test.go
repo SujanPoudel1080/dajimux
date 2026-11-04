@@ -51,7 +51,8 @@ func TestDaemonLifecycleAndSession(t *testing.T) {
 	}
 
 	// Read initial LayoutState
-	env, err := protocol.ReadEnvelope(conn)
+	reader := protocol.NewEnvelopeReader(conn)
+	env, err := reader.Read()
 	if err != nil {
 		t.Fatalf("failed to read response envelope: %v", err)
 	}
@@ -94,5 +95,48 @@ func TestDaemonLifecycleAndSession(t *testing.T) {
 	pane := sess.Panes[state.ActivePaneID]
 	if pane == nil || pane.AgentBadge != "🤖 Generating tests" {
 		t.Errorf("expected agent badge to be updated")
+	}
+
+	// Test ListSessions request
+	err = protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type: protocol.MsgListSessions,
+	})
+	if err != nil {
+		t.Fatalf("failed to write list sessions envelope: %v", err)
+	}
+
+	var listEnv *protocol.Envelope
+	for i := 0; i < 10; i++ {
+		e, err := reader.Read()
+		if err != nil {
+			t.Fatalf("failed to read envelope: %v", err)
+		}
+		if e.Type == protocol.MsgListSessionsRes {
+			listEnv = e
+			break
+		}
+	}
+	if listEnv == nil {
+		t.Fatalf("expected list_sessions_res envelope, none received")
+	}
+
+	var listRes protocol.ListSessionsResponse
+	if err := json.Unmarshal(listEnv.Payload, &listRes); err != nil {
+		t.Fatalf("failed to unmarshal list response: %v", err)
+	}
+	if len(listRes.Sessions) == 0 {
+		t.Fatalf("expected at least 1 session in list response")
+	}
+	found := false
+	for _, s := range listRes.Sessions {
+		if s.Name == "test-session" {
+			found = true
+			if s.WorkspacesCount != 1 || s.PanesCount != 1 {
+				t.Errorf("unexpected counts: %+v", s)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("test-session not found in list response")
 	}
 }
