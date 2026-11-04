@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"unsafe"
 
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
 )
@@ -760,7 +761,7 @@ func getTermSize() (int, int, error) {
 		syscall.SYS_IOCTL,
 		os.Stdout.Fd(),
 		syscall.TIOCGWINSZ,
-		uintptr(unsafePointer(&ws)),
+		uintptr(unsafe.Pointer(&ws)),
 	)
 	if errno != 0 {
 		return 80, 24, errno

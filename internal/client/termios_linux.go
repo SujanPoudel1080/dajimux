@@ -1,0 +1,24 @@
+//go:build !darwin
+
+package client
+
+import (
+	"syscall"
+	"unsafe"
+)
+
+func getTermios(fd int, state *syscall.Termios) error {
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TCGETS, uintptr(unsafe.Pointer(state)))
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+func setTermios(fd int, state *syscall.Termios) error {
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TCSETS, uintptr(unsafe.Pointer(state)))
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
