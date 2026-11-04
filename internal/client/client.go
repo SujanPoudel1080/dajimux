@@ -179,8 +179,8 @@ func (c *Client) rewriteFrame(ansi []byte) []byte {
 	offX, offY, w, h := 1, 2, 80, rows-2
 	for _, p := range state.Panes {
 		if p.IsActive {
-			offX = p.X + 1   // BSP rect is 0-based, terminal is 1-based
-			offY = p.Y + 2   // +1 for top chrome row, +1 for 1-based
+			offX = p.X + 1 // BSP rect is 0-based, terminal is 1-based
+			offY = p.Y + 1 // p.Y already starts at 1 (row 0 is header), so +1 gives 1-based terminal row
 			w = p.W
 			h = p.H
 			break
@@ -496,7 +496,7 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	activeX := 1
 	for _, p := range state.Panes {
 		if p.IsActive {
-			activeY = p.Y + 2 // +1 for chrome, +1 for 1-based
+			activeY = p.Y + 1
 			activeX = p.X + 1
 			break
 		}
