@@ -267,9 +267,7 @@ func (c *Client) readStdinLoop() error {
 			c.renderPalette()
 
 		case ActionClosePalette:
-			c.palette = nil
-			c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeNormal)})
-			c.renderChrome(c.lastState)
+			c.closePalette()
 
 		case ActionPaletteType:
 			if c.palette != nil && len(res.RawForward) > 0 {
@@ -303,9 +301,7 @@ func (c *Client) readStdinLoop() error {
 					selected := items[c.palette.SelectedIndex]
 					c.executePaletteItem(selected)
 				}
-				c.palette = nil
-				c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeNormal)})
-				c.renderChrome(c.lastState)
+				c.closePalette()
 			}
 
 		case ActionEnterScrollback:
@@ -743,13 +739,52 @@ func (c *Client) renderPalette() {
 		}
 	}
 
-	// 5. Bottom border (anchored at fixed bottomY)
+	// 5. Bottom border with keybinding hint
 	bottomY := startY + 3 + maxVisibleItems
-	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s└%s┘%s",
-		bottomY, startX, bg, borderFg, strings.Repeat("─", boxWidth-2), reset))
+	hint := " [Esc] Close │ [Enter] Run │ [↑/↓] Select "
+	hintDashes := boxWidth - 2 - len(hint)
+	if hintDashes < 0 {
+		hintDashes = 0
+	}
+	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s└─%s%s%s%s┘%s",
+		bottomY, startX, bg, borderFg, fg, hint, borderFg, strings.Repeat("─", hintDashes), reset))
 
 	b.WriteString("\0338") // Restore cursor
 	os.Stdout.WriteString(b.String())
+}
+
+// closePalette clears the palette frame, restores Normal mode, and requests daemon redraw.
+func (c *Client) closePalette() {
+	c.mu.Lock()
+	pX, pY, pW, pH := c.prevPaletteX, c.prevPaletteY, c.prevPaletteW, c.prevPaletteH
+	c.prevPaletteX, c.prevPaletteY, c.prevPaletteW, c.prevPaletteH = 0, 0, 0, 0
+	c.palette = nil
+	if c.inputHandler != nil {
+		c.inputHandler.CurrentMode = protocol.ModeNormal
+	}
+	c.mu.Unlock()
+
+	// Erase the palette bounding box on screen
+	if pH > 0 && pW > 0 {
+		var b strings.Builder
+		b.WriteString("\0337") // Save cursor
+		for y := pY; y <= pY+pH; y++ {
+			b.WriteString(fmt.Sprintf("\033[%d;%dH%s", y, pX, strings.Repeat(" ", pW)))
+		}
+		b.WriteString("\0338") // Restore cursor
+		os.Stdout.WriteString(b.String())
+	}
+
+	c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeNormal)})
+	c.renderChrome(c.lastState)
+
+	// Send redraw action to daemon to immediately repaint pane contents
+	req := protocol.ActionPayload{Action: "redraw"}
+	reqData, _ := json.Marshal(req)
+	_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
+		Type:    protocol.MsgAction,
+		Payload: reqData,
+	})
 }
 
 func min(a, b int) int {

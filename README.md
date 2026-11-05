@@ -109,6 +109,11 @@ dajimux peer connect remote.devbox.internal:7474 --token "my-secret-key" main
   - `i` / `a` / `Enter` : Return to `INSERT` mode
   - `:` or `Space` : Open Command Palette
 
+- In `COMMAND PALETTE` mode:
+  - `↑` / `↓` (or `Ctrl-p` / `Ctrl-n`) : Navigate commands
+  - `Enter` : Execute selected command and return to `NORMAL` mode
+  - `Esc` or `Ctrl-c` : Dismiss command palette and return to `NORMAL` mode
+
 - In `SCROLLBACK` mode:
   - `k` / `j` : Scroll up / down 1 line (also Up/Down arrows)
   - `Ctrl-u` / `Ctrl-d` : Page up / Page down
