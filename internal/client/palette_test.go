@@ -42,3 +42,41 @@ func TestPaletteFuzzyFilter(t *testing.T) {
 		t.Errorf("expected selected index 0, got %d", p.SelectedIndex)
 	}
 }
+
+func TestPaletteWorkspaceListing(t *testing.T) {
+	p := NewPaletteWithWorkspaces(6)
+
+	// Ensure all 9 workspaces are present
+	wsFound := make(map[int]bool)
+	for _, item := range p.Items {
+		if item.Action == ActionSwitchWorkspace {
+			wsFound[item.Workspace] = true
+		}
+	}
+
+	for ws := 1; ws <= 6; ws++ {
+		if !wsFound[ws] {
+			t.Errorf("expected workspace %d to be in palette items", ws)
+		}
+	}
+
+	// Test searching for "workspace 4"
+	p.Query = "workspace 4"
+	matches := p.Filter()
+	if len(matches) == 0 {
+		t.Fatalf("expected matches for 'workspace 4', got none")
+	}
+	if matches[0].Workspace != 4 {
+		t.Errorf("expected matched workspace 4, got %d", matches[0].Workspace)
+	}
+
+	// Test searching for "workspace 5"
+	p.Query = "workspace 5"
+	matches = p.Filter()
+	if len(matches) == 0 {
+		t.Fatalf("expected matches for 'workspace 5', got none")
+	}
+	if matches[0].Workspace != 5 {
+		t.Errorf("expected matched workspace 5, got %d", matches[0].Workspace)
+	}
+}

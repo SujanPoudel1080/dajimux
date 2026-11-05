@@ -1,6 +1,7 @@
 package client
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 )
@@ -21,9 +22,9 @@ type Palette struct {
 	SelectedIndex int
 }
 
-// DefaultPaletteItems returns the built-in commands available in the palette.
-func DefaultPaletteItems() []PaletteItem {
-	return []PaletteItem{
+// PaletteItemsForWorkspaces returns the built-in commands with workspace entries up to max(9, totalWS).
+func PaletteItemsForWorkspaces(totalWS int) []PaletteItem {
+	items := []PaletteItem{
 		{ID: "split_v", Title: "Split Vertical", Description: "Split active pane vertically (left/right)", Action: ActionSplitVertical},
 		{ID: "split_h", Title: "Split Horizontal", Description: "Split active pane horizontally (top/bottom)", Action: ActionSplitHorizontal},
 		{ID: "close", Title: "Close Pane", Description: "Terminate process and close pane", Action: ActionClosePane},
@@ -31,17 +32,40 @@ func DefaultPaletteItems() []PaletteItem {
 		{ID: "resize", Title: "Resize Mode", Description: "Fine-tune pane split ratios", Action: ActionModeChange},
 		{ID: "scrollback", Title: "Scrollback Mode", Description: "Browse scrollback history and copy text", Action: ActionEnterScrollback},
 		{ID: "detach", Title: "Detach Session", Description: "Disconnect client and keep session running in daemon", Action: ActionDetach},
-		{ID: "ws1", Title: "Go to Workspace 1", Description: "Switch to workspace 1", Action: ActionSwitchWorkspace, Workspace: 1},
-		{ID: "ws2", Title: "Go to Workspace 2", Description: "Switch to workspace 2", Action: ActionSwitchWorkspace, Workspace: 2},
-		{ID: "ws3", Title: "Go to Workspace 3", Description: "Switch to workspace 3", Action: ActionSwitchWorkspace, Workspace: 3},
-		{ID: "ws4", Title: "Go to Workspace 4", Description: "Switch to workspace 4", Action: ActionSwitchWorkspace, Workspace: 4},
 	}
+
+	maxWS := totalWS
+	if maxWS < 9 {
+		maxWS = 9
+	}
+	for i := 1; i <= maxWS; i++ {
+		items = append(items, PaletteItem{
+			ID:          fmt.Sprintf("ws%d", i),
+			Title:       fmt.Sprintf("Go to Workspace %d", i),
+			Description: fmt.Sprintf("Switch to workspace %d", i),
+			Action:      ActionSwitchWorkspace,
+			Workspace:   i,
+		})
+	}
+	return items
+}
+
+// DefaultPaletteItems returns the built-in commands available in the palette.
+func DefaultPaletteItems() []PaletteItem {
+	return PaletteItemsForWorkspaces(9)
 }
 
 // NewPalette creates a command palette initialized with default commands.
 func NewPalette() *Palette {
 	return &Palette{
 		Items: DefaultPaletteItems(),
+	}
+}
+
+// NewPaletteWithWorkspaces creates a command palette initialized with commands for the given workspace count.
+func NewPaletteWithWorkspaces(totalWS int) *Palette {
+	return &Palette{
+		Items: PaletteItemsForWorkspaces(totalWS),
 	}
 }
 
