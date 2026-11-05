@@ -78,3 +78,43 @@ func TestInputHandlerSlowDoubleSpace(t *testing.T) {
 		t.Fatalf("mode should still be INSERT, got %s", handler.CurrentMode)
 	}
 }
+
+func TestInputHandlerPaletteDismissAndExecute(t *testing.T) {
+	handler := NewInputHandler()
+	handler.CurrentMode = protocol.ModeNormal
+
+	// Open palette with ':'
+	resOpen := handler.HandleKey([]byte{':'})
+	if resOpen.Action != ActionOpenPalette || handler.CurrentMode != protocol.ModeCommandPalette {
+		t.Fatalf("expected ActionOpenPalette, got %s (mode: %s)", resOpen.Action, handler.CurrentMode)
+	}
+
+	// Press Esc (0x1b) to dismiss palette
+	resEsc := handler.HandleKey([]byte{0x1b})
+	if resEsc.Action != ActionClosePalette {
+		t.Fatalf("expected ActionClosePalette on Esc, got %s", resEsc.Action)
+	}
+	if handler.CurrentMode != protocol.ModeNormal {
+		t.Fatalf("expected mode NORMAL after Esc, got %s", handler.CurrentMode)
+	}
+
+	// Reopen palette and test Ctrl-C (0x03)
+	handler.HandleKey([]byte{':'})
+	resCtrlC := handler.HandleKey([]byte{0x03})
+	if resCtrlC.Action != ActionClosePalette {
+		t.Fatalf("expected ActionClosePalette on Ctrl-C, got %s", resCtrlC.Action)
+	}
+	if handler.CurrentMode != protocol.ModeNormal {
+		t.Fatalf("expected mode NORMAL after Ctrl-C, got %s", handler.CurrentMode)
+	}
+
+	// Reopen palette and test Enter (\r) execution
+	handler.HandleKey([]byte{':'})
+	resEnter := handler.HandleKey([]byte{'\r'})
+	if resEnter.Action != ActionExecutePalette {
+		t.Fatalf("expected ActionExecutePalette on Enter, got %s", resEnter.Action)
+	}
+	if handler.CurrentMode != protocol.ModeNormal {
+		t.Fatalf("expected mode NORMAL after Enter execution, got %s", handler.CurrentMode)
+	}
+}
