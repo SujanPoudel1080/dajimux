@@ -259,7 +259,7 @@ func (c *Client) readStdinLoop() error {
 			})
 
 		case ActionOpenPalette:
-			c.palette = NewPalette()
+			c.palette = NewPaletteWithWorkspaces(c.lastState.TotalWorkspaces)
 			c.renderPalette()
 
 		case ActionClosePalette:
@@ -644,12 +644,12 @@ func (c *Client) renderPalette() {
 	c.mu.Unlock()
 
 	items := c.palette.Filter()
-	boxWidth := 54
+	boxWidth := 72
 	if boxWidth > cols-4 {
 		boxWidth = cols - 4
 	}
-	if boxWidth < 20 {
-		boxWidth = 20
+	if boxWidth < 30 {
+		boxWidth = 30
 	}
 
 	maxVisibleItems := 8
@@ -710,7 +710,7 @@ func (c *Client) renderPalette() {
 			lineFg = "\033[1m\033[38;5;255m"
 		}
 
-		lineText := fmt.Sprintf("%s%-20s %s", prefix, item.Title, item.Description)
+		lineText := fmt.Sprintf("%s%-22s %s", prefix, item.Title, item.Description)
 		if len(lineText) > boxWidth-4 {
 			lineText = lineText[:boxWidth-4]
 		}
