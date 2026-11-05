@@ -404,6 +404,8 @@ func (d *Daemon) handleAction(s *Session, action protocol.ActionPayload) {
 		if target != "" {
 			s.SetMode(target)
 		}
+	case "redraw":
+		s.NotifyState()
 	}
 }
 

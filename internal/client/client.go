@@ -31,10 +31,12 @@ type Client struct {
 	rows            int
 	origTerm        *syscall.Termios
 	isRunning       bool
-	prevPaletteX    int
-	prevPaletteY    int
-	prevPaletteW    int
-	prevPaletteH    int
+	prevPaletteX     int
+	prevPaletteY     int
+	prevPaletteW     int
+	prevPaletteH     int
+	lastRenderedCols int
+	lastRenderedRows int
 }
 
 // NewClient initializes a client for the target session.
@@ -113,6 +115,12 @@ func (c *Client) RunWithConn(conn net.Conn) error {
 				c.cols = nc
 				c.rows = nr
 				c.mu.Unlock()
+
+				// Clear terminal screen and reset margins on resize to eliminate stale borders
+				os.Stdout.WriteString("\033[H\033[2J")
+				if nr > 3 {
+					os.Stdout.WriteString(fmt.Sprintf("\033[2;%dr", nr-1))
+				}
 
 				rp, _ := json.Marshal(protocol.ResizePayload{Cols: nc, Rows: nr})
 				_ = protocol.WriteEnvelope(conn, protocol.Envelope{
@@ -469,12 +477,23 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	c.mu.Lock()
 	cols := c.cols
 	rows := c.rows
+	sizeChanged := (cols != c.lastRenderedCols || rows != c.lastRenderedRows)
+	c.lastRenderedCols = cols
+	c.lastRenderedRows = rows
 	c.mu.Unlock()
 
 	var b strings.Builder
 
 	// Save cursor
 	b.WriteString("\0337")
+
+	if sizeChanged {
+		// Clear entire screen to remove stale pane borders, old footers, and overlays from previous sizes
+		b.WriteString("\033[H\033[2J")
+		if rows > 3 {
+			b.WriteString(fmt.Sprintf("\033[2;%dr", rows-1))
+		}
+	}
 
 	// 1. Draw Top Header (Workspaces & Mode)
 	b.WriteString("\033[1;1H") // Move to row 1, col 1
@@ -542,6 +561,11 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	b.WriteString(fmt.Sprintf("\033[%d;%dH", activeY, activeX))
 
 	os.Stdout.WriteString(b.String())
+
+	// If command palette is open and screen size changed, re-render it at new centered coordinates
+	if c.palette != nil && sizeChanged {
+		c.renderPalette()
+	}
 }
 
 // renderScrollback renders the scrollback buffer lines and navigation footer.
