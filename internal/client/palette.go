@@ -20,6 +20,7 @@ type Palette struct {
 	Query         string
 	Items         []PaletteItem
 	SelectedIndex int
+	ScrollOffset  int
 }
 
 // PaletteItemsForWorkspaces returns the built-in commands with workspace entries up to max(9, totalWS).
@@ -97,32 +98,67 @@ func (p *Palette) Filter() []PaletteItem {
 	return append(res, fuzzyMatches...)
 }
 
-// MoveDown increments selection.
+// MoveDown increments selection with wrap-around.
 func (p *Palette) MoveDown(max int) {
+	if max <= 0 {
+		return
+	}
 	if p.SelectedIndex < max-1 {
 		p.SelectedIndex++
+	} else {
+		p.SelectedIndex = 0
 	}
 }
 
-// MoveUp decrements selection.
-func (p *Palette) MoveUp() {
+// MoveUp decrements selection with wrap-around.
+func (p *Palette) MoveUp(max int) {
+	if max <= 0 {
+		return
+	}
 	if p.SelectedIndex > 0 {
 		p.SelectedIndex--
+	} else {
+		p.SelectedIndex = max - 1
 	}
 }
 
-// TypeChar appends a rune to the query and resets selection.
+// AdjustScroll keeps SelectedIndex within the visible window [ScrollOffset, ScrollOffset+maxVisible).
+func (p *Palette) AdjustScroll(maxVisible, totalItems int) {
+	if totalItems <= maxVisible {
+		p.ScrollOffset = 0
+		return
+	}
+
+	if p.SelectedIndex < p.ScrollOffset {
+		p.ScrollOffset = p.SelectedIndex
+	}
+	if p.SelectedIndex >= p.ScrollOffset+maxVisible {
+		p.ScrollOffset = p.SelectedIndex - maxVisible + 1
+	}
+
+	maxScroll := totalItems - maxVisible
+	if p.ScrollOffset > maxScroll {
+		p.ScrollOffset = maxScroll
+	}
+	if p.ScrollOffset < 0 {
+		p.ScrollOffset = 0
+	}
+}
+
+// TypeChar appends a rune to the query and resets selection and scroll.
 func (p *Palette) TypeChar(r rune) {
 	p.Query += string(r)
 	p.SelectedIndex = 0
+	p.ScrollOffset = 0
 }
 
-// Backspace removes the last character from the query.
+// Backspace removes the last character from the query and resets selection and scroll.
 func (p *Palette) Backspace() {
 	if len(p.Query) > 0 {
 		runes := []rune(p.Query)
 		p.Query = string(runes[:len(runes)-1])
 		p.SelectedIndex = 0
+		p.ScrollOffset = 0
 	}
 }
 
