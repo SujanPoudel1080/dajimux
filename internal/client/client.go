@@ -31,6 +31,10 @@ type Client struct {
 	rows            int
 	origTerm        *syscall.Termios
 	isRunning       bool
+	prevPaletteX    int
+	prevPaletteY    int
+	prevPaletteW    int
+	prevPaletteH    int
 }
 
 // NewClient initializes a client for the target session.
@@ -653,10 +657,7 @@ func (c *Client) renderPalette() {
 	}
 
 	maxVisibleItems := 8
-	boxHeight := len(items) + 4
-	if boxHeight > maxVisibleItems+4 {
-		boxHeight = maxVisibleItems + 4
-	}
+	boxHeight := maxVisibleItems + 4
 
 	startX := (cols - boxWidth) / 2
 	startY := (rows - boxHeight) / 2
@@ -669,6 +670,17 @@ func (c *Client) renderPalette() {
 
 	var b strings.Builder
 	b.WriteString("\0337") // Save cursor
+
+	// If the bounding box moved or changed size, clear the old bounding area first
+	if c.prevPaletteH > 0 && (c.prevPaletteX != startX || c.prevPaletteY != startY || c.prevPaletteW != boxWidth || c.prevPaletteH != boxHeight) {
+		for y := c.prevPaletteY; y < c.prevPaletteY+c.prevPaletteH; y++ {
+			b.WriteString(fmt.Sprintf("\033[%d;%dH%s", y, c.prevPaletteX, strings.Repeat(" ", c.prevPaletteW)))
+		}
+	}
+	c.prevPaletteX = startX
+	c.prevPaletteY = startY
+	c.prevPaletteW = boxWidth
+	c.prevPaletteH = boxHeight
 
 	// Palette Border & Colors: Deep Blue background (237) and Cyan borders (38;5;51)
 	bg := "\033[48;5;235m"
@@ -698,33 +710,41 @@ func (c *Client) renderPalette() {
 	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s├%s┤%s",
 		startY+2, startX, bg, borderFg, strings.Repeat("─", boxWidth-2), reset))
 
-	// 4. Items
-	for i := 0; i < maxVisibleItems && i < len(items); i++ {
-		item := items[i]
-		prefix := "  "
-		lineBg := bg
-		lineFg := fg
-		if i == c.palette.SelectedIndex {
-			prefix = "> "
-			lineBg = "\033[48;5;24m" // Highlighted dark cyan
-			lineFg = "\033[1m\033[38;5;255m"
-		}
+	// 4. Fixed height item slots (prevents frame shrinking & border ghosting)
+	for i := 0; i < maxVisibleItems; i++ {
+		slotY := startY + 3 + i
+		if i < len(items) {
+			item := items[i]
+			prefix := "  "
+			lineBg := bg
+			lineFg := fg
+			if i == c.palette.SelectedIndex {
+				prefix = "> "
+				lineBg = "\033[48;5;24m" // Highlighted dark cyan
+				lineFg = "\033[1m\033[38;5;255m"
+			}
 
-		lineText := fmt.Sprintf("%s%-22s %s", prefix, item.Title, item.Description)
-		if len(lineText) > boxWidth-4 {
-			lineText = lineText[:boxWidth-4]
-		}
-		padItem := boxWidth - 2 - len(lineText)
-		if padItem < 0 {
-			padItem = 0
-		}
+			lineText := fmt.Sprintf("%s%-22s %s", prefix, item.Title, item.Description)
+			if len(lineText) > boxWidth-4 {
+				lineText = lineText[:boxWidth-4]
+			}
+			padItem := boxWidth - 2 - len(lineText)
+			if padItem < 0 {
+				padItem = 0
+			}
 
-		b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s│%s%s%s%s%s│%s",
-			startY+3+i, startX, borderFg, lineBg, lineFg, lineText, strings.Repeat(" ", padItem), reset, borderFg, reset))
+			b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s│%s%s%s%s%s│%s",
+				slotY, startX, borderFg, lineBg, lineFg, lineText, strings.Repeat(" ", padItem), reset, borderFg, reset))
+		} else {
+			// Clean background padding for empty slot
+			padEmpty := boxWidth - 2
+			b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s│%s%s│%s",
+				slotY, startX, borderFg, bg, strings.Repeat(" ", padEmpty), borderFg, reset))
+		}
 	}
 
-	// 5. Bottom border
-	bottomY := startY + 3 + min(maxVisibleItems, len(items))
+	// 5. Bottom border (anchored at fixed bottomY)
+	bottomY := startY + 3 + maxVisibleItems
 	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s└%s┘%s",
 		bottomY, startX, bg, borderFg, strings.Repeat("─", boxWidth-2), reset))
 
