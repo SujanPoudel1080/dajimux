@@ -290,7 +290,8 @@ func (c *Client) readStdinLoop() error {
 
 		case ActionPaletteUp:
 			if c.palette != nil {
-				c.palette.MoveUp()
+				items := c.palette.Filter()
+				c.palette.MoveUp(len(items))
 				c.renderPalette()
 			}
 
@@ -684,14 +685,21 @@ func (c *Client) renderPalette() {
 	borderFg := "\033[38;5;51m"
 	reset := "\033[0m"
 
-	// 1. Top border
+	// Adjust scroll window so SelectedIndex is always visible
+	c.palette.AdjustScroll(maxVisibleItems, len(items))
+
+	// 1. Top border with title and item count
 	title := " Command Palette "
-	dashes := boxWidth - 2 - len(title)
+	countBadge := ""
+	if len(items) > 0 {
+		countBadge = fmt.Sprintf(" [%d/%d] ", c.palette.SelectedIndex+1, len(items))
+	}
+	dashes := boxWidth - 2 - len(title) - len(countBadge)
 	if dashes < 0 {
 		dashes = 0
 	}
-	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s┌─%s%s%s%s┐%s",
-		startY, startX, bg, borderFg, fg, title, borderFg, strings.Repeat("─", dashes), reset))
+	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s┌─%s%s%s%s%s%s┐%s",
+		startY, startX, bg, borderFg, fg, title, borderFg, strings.Repeat("─", dashes), fg, countBadge, reset))
 
 	// 2. Query input line
 	queryPrompt := fmt.Sprintf("> %s_", c.palette.Query)
@@ -702,19 +710,28 @@ func (c *Client) renderPalette() {
 	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s│ %s\033[1m%s\033[0m%s%s%s│%s",
 		startY+1, startX, bg, borderFg, fg, queryPrompt, bg, strings.Repeat(" ", padQuery), borderFg, reset))
 
-	// 3. Separator
-	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s├%s┤%s",
-		startY+2, startX, bg, borderFg, strings.Repeat("─", boxWidth-2), reset))
+	// 3. Separator with scroll-up indicator
+	scrollUpInd := "─"
+	if c.palette.ScrollOffset > 0 {
+		scrollUpInd = " ▲ more above ─"
+	}
+	sepDashes := boxWidth - 2 - len(scrollUpInd)
+	if sepDashes < 0 {
+		sepDashes = 0
+	}
+	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s├%s%s┤%s",
+		startY+2, startX, bg, borderFg, scrollUpInd, strings.Repeat("─", sepDashes), reset))
 
-	// 4. Fixed height item slots (prevents frame shrinking & border ghosting)
+	// 4. Fixed height scrolling item slots
 	for i := 0; i < maxVisibleItems; i++ {
 		slotY := startY + 3 + i
-		if i < len(items) {
-			item := items[i]
+		itemIdx := c.palette.ScrollOffset + i
+		if itemIdx < len(items) {
+			item := items[itemIdx]
 			prefix := "  "
 			lineBg := bg
 			lineFg := fg
-			if i == c.palette.SelectedIndex {
+			if itemIdx == c.palette.SelectedIndex {
 				prefix = "> "
 				lineBg = "\033[48;5;24m" // Highlighted dark cyan
 				lineFg = "\033[1m\033[38;5;255m"
@@ -739,9 +756,13 @@ func (c *Client) renderPalette() {
 		}
 	}
 
-	// 5. Bottom border with keybinding hint
+	// 5. Bottom border with scroll-down indicator & keybinding hint
 	bottomY := startY + 3 + maxVisibleItems
-	hint := " [Esc] Close │ [Enter] Run │ [↑/↓] Select "
+	scrollDownInd := ""
+	if c.palette.ScrollOffset+maxVisibleItems < len(items) {
+		scrollDownInd = "▼ "
+	}
+	hint := fmt.Sprintf(" %s[Esc] Close │ [Enter] Run │ [↑/↓] Select ", scrollDownInd)
 	hintDashes := boxWidth - 2 - len(hint)
 	if hintDashes < 0 {
 		hintDashes = 0
