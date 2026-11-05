@@ -163,9 +163,11 @@ main() {
     log_info "Installing binary to ${TARGET_PATH}..."
 
     if [ "${USE_SUDO:-0}" -eq 1 ]; then
+        sudo rm -f "${TARGET_PATH}"
         sudo cp "${TMP_DIR}/${BINARY_NAME}" "${TARGET_PATH}"
         sudo chmod 755 "${TARGET_PATH}"
     else
+        rm -f "${TARGET_PATH}"
         cp "${TMP_DIR}/${BINARY_NAME}" "${TARGET_PATH}"
         chmod 755 "${TARGET_PATH}"
     fi
