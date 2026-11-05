@@ -240,12 +240,13 @@ func (h *InputHandler) handleResizeMode(data []byte) InputResult {
 func (h *InputHandler) handlePaletteMode(data []byte) InputResult {
 	if len(data) == 1 {
 		b := data[0]
-		if b == 0x1b { // Escape closes palette
+		if b == 0x1b || b == 0x03 { // Escape (0x1b) or Ctrl-C (0x03) closes palette
 			h.CurrentMode = protocol.ModeNormal
 			return InputResult{Action: ActionClosePalette, TargetMode: protocol.ModeNormal}
 		}
-		if b == '\r' || b == '\n' { // Enter executes
-			return InputResult{Action: ActionExecutePalette}
+		if b == '\r' || b == '\n' { // Enter executes and returns to Normal mode
+			h.CurrentMode = protocol.ModeNormal
+			return InputResult{Action: ActionExecutePalette, TargetMode: protocol.ModeNormal}
 		}
 		if b == 0x7f || b == 0x08 { // Backspace
 			return InputResult{Action: ActionPaletteBackspace}
