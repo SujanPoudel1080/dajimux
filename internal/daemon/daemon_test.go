@@ -241,3 +241,111 @@ func TestDaemonSaveAndRestoreState(t *testing.T) {
 		t.Errorf("expected 2 panes in restored session, got %d", len(restoredSess.Panes))
 	}
 }
+
+func TestDaemonListPanesAndSpawnPane(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dajimux-panes-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	sockPath := filepath.Join(tmpDir, "panes.sock")
+	d := NewDaemon(sockPath)
+	if err := d.Start(); err != nil {
+		t.Fatalf("failed to start daemon: %v", err)
+	}
+	defer d.Stop()
+
+	go func() {
+		_ = d.AcceptLoop()
+	}()
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	reader := protocol.NewEnvelopeReader(conn)
+
+	// Attach to session
+	attachPayload, _ := json.Marshal(protocol.AttachPayload{
+		SessionName: "test-mcp",
+		Cols:        80,
+		Rows:        24,
+	})
+	_ = protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type:    protocol.MsgAttach,
+		Payload: attachPayload,
+	})
+
+	// Discard attach layout state
+	_, _ = reader.Read()
+
+	// 1. Request ListPanes for "test-mcp"
+	reqData, _ := json.Marshal(protocol.ListPanesRequest{SessionName: "test-mcp"})
+	_ = protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type:    protocol.MsgListPanes,
+		Payload: reqData,
+	})
+
+	var listEnv *protocol.Envelope
+	for i := 0; i < 10; i++ {
+		e, err := reader.Read()
+		if err != nil {
+			t.Fatalf("failed to read: %v", err)
+		}
+		if e.Type == protocol.MsgListPanesRes {
+			listEnv = e
+			break
+		}
+	}
+	if listEnv == nil {
+		t.Fatalf("expected MsgListPanesRes envelope")
+	}
+
+	var listRes protocol.ListPanesResponse
+	if err := json.Unmarshal(listEnv.Payload, &listRes); err != nil {
+		t.Fatalf("failed to unmarshal list panes: %v", err)
+	}
+	if len(listRes.Panes) != 1 {
+		t.Fatalf("expected 1 pane in test-mcp, got %d", len(listRes.Panes))
+	}
+	p1 := listRes.Panes[0]
+	if p1.SessionName != "test-mcp" || p1.PaneID == "" {
+		t.Errorf("unexpected pane info: %+v", p1)
+	}
+
+	// 2. Request SpawnPane
+	spawnReq, _ := json.Marshal(protocol.SpawnPaneRequest{
+		SessionName: "test-mcp",
+		Direction:   "horizontal",
+	})
+	_ = protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type:    protocol.MsgSpawnPane,
+		Payload: spawnReq,
+	})
+
+	var spawnEnv *protocol.Envelope
+	for i := 0; i < 10; i++ {
+		e, err := reader.Read()
+		if err != nil {
+			t.Fatalf("failed to read: %v", err)
+		}
+		if e.Type == protocol.MsgSpawnPaneRes {
+			spawnEnv = e
+			break
+		}
+	}
+	if spawnEnv == nil {
+		t.Fatalf("expected MsgSpawnPaneRes envelope")
+	}
+
+	var spawnRes protocol.SpawnPaneResponse
+	if err := json.Unmarshal(spawnEnv.Payload, &spawnRes); err != nil {
+		t.Fatalf("failed to unmarshal spawn res: %v", err)
+	}
+	if !spawnRes.Success || spawnRes.PaneID == "" {
+		t.Errorf("expected spawn success, got %+v", spawnRes)
+	}
+}

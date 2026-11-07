@@ -147,6 +147,31 @@ dajimux supports native SGR 1006 extended mouse reporting out of the box:
   - Scroll Down to browse back down to real-time shell output.
 - **Drag Split Borders**: Click and drag along split borders to resize adjacent panes in real time.
 
+## Model Context Protocol (MCP) Server
+
+`dajimux` includes a built-in [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server over standard I/O (`dajimux mcp`). Any AI agent (Claude Code, Cursor, Gemini CLI, Aider) can interact with running terminal sessions as tools:
+
+- `list_panes`: Query all sessions, workspaces, and pane geometries with working directories and status badges.
+- `read_pane`: Capture live terminal output or scrollback history lines.
+- `send_command`: Inject shell commands or keystrokes directly into any pane.
+- `spawn_pane`: Dynamically split and spawn a new terminal pane.
+- `set_agent_status`: Update the telemetry state badge in the pane's header.
+
+### Claude Desktop / Cursor Configuration
+
+Add to `claude_desktop_config.json` or your agent MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "dajimux": {
+      "command": "dajimux",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
 ## Configuration
 
 Customize keybindings, modal switching, and colors via `~/.config/dajimux/config.yaml`:
