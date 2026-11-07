@@ -18,6 +18,12 @@ import (
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
 )
 
+// DragPoint tracks coordinate origin during mouse split dragging.
+type DragPoint struct {
+	X int
+	Y int
+}
+
 // Client manages the terminal UI, raw input mode, and IPC connection to the daemon.
 type Client struct {
 	mu              sync.Mutex
@@ -34,6 +40,7 @@ type Client struct {
 	rows            int
 	origTerm        *syscall.Termios
 	isRunning       bool
+	dragStart        *DragPoint
 	prevPaletteX     int
 	prevPaletteY     int
 	prevPaletteW     int
@@ -104,6 +111,9 @@ func (c *Client) RunWithConn(conn net.Conn) error {
 
 	// Clear screen and enter alternate screen buffer
 	fmt.Print("\033[?1049h\033[H\033[2J")
+	if c.Config == nil || c.Config.General.MouseSupport {
+		fmt.Print("\033[?1000h\033[?1002h\033[?1006h")
+	}
 	if c.rows > 3 {
 		fmt.Printf("\033[2;%dr", c.rows-1)
 	}
@@ -236,6 +246,14 @@ func (c *Client) readStdinLoop() error {
 			return err
 		}
 
+		// Intercept SGR mouse events: \033[<
+		if n >= 6 && buf[0] == 0x1b && buf[1] == '[' && buf[2] == '<' {
+			if evt, ok := ParseSGREvent(buf[:n]); ok {
+				c.handleMouseEvent(evt)
+				continue
+			}
+		}
+
 		res := c.inputHandler.HandleKey(buf[:n])
 
 		// Send undo bytes if required (e.g. backspace after double-tap space)
@@ -363,18 +381,7 @@ func (c *Client) readStdinLoop() error {
 			})
 
 		case ActionExitScrollback:
-			c.mu.Lock()
-			c.scrollbackLines = nil
-			c.scrollOffset = 0
-			c.mu.Unlock()
-			c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeNormal)})
-			c.renderChrome(c.lastState)
-			req := protocol.ActionPayload{Action: "redraw"}
-			reqData, _ := json.Marshal(req)
-			_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
-				Type:    protocol.MsgAction,
-				Payload: reqData,
-			})
+			c.exitScrollback()
 
 		case ActionScrollUp:
 			c.mu.Lock()
@@ -470,6 +477,161 @@ func (c *Client) enterScrollback() {
 		Type:    protocol.MsgPaneCapture,
 		Payload: reqData,
 	})
+}
+
+func (c *Client) exitScrollback() {
+	c.mu.Lock()
+	c.scrollbackLines = nil
+	c.scrollOffset = 0
+	c.mu.Unlock()
+	c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeNormal)})
+	c.renderChrome(c.lastState)
+	req := protocol.ActionPayload{Action: "redraw"}
+	reqData, _ := json.Marshal(req)
+	_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
+		Type:    protocol.MsgAction,
+		Payload: reqData,
+	})
+}
+
+// findWorkspaceFromHeaderClick calculates which workspace tab was clicked in row 1.
+func (c *Client) findWorkspaceFromHeaderClick(clickX int) int {
+	c.mu.Lock()
+	state := c.lastState
+	c.mu.Unlock()
+
+	mode := state.Mode
+	if mode == "" {
+		mode = protocol.ModeInsert
+	}
+	sessionName := state.SessionName
+	if sessionName == "" {
+		sessionName = "main"
+	}
+
+	// Calculate start column of workspace list in row 1:
+	// Format: " MODE " + " [dajimux:SESSION] "
+	startCol := 1 + (len(mode) + 2) + (len(sessionName) + 12)
+
+	currCol := startCol
+	totalWS := state.TotalWorkspaces
+	if totalWS < 1 {
+		totalWS = 1
+	}
+	if totalWS > 9 {
+		totalWS = 9
+	}
+
+	for i := 1; i <= 9; i++ {
+		width := 3 // " %d "
+		if i == state.ActiveWorkspace {
+			width = 4 // " %d* "
+		}
+
+		if i <= totalWS || i == state.ActiveWorkspace {
+			if clickX >= currCol && clickX < currCol+width {
+				return i
+			}
+			currCol += width
+		}
+	}
+
+	return 0
+}
+
+func (c *Client) handleMouseEvent(evt *MouseEvent) {
+	if evt == nil {
+		return
+	}
+
+	c.mu.Lock()
+	state := c.lastState
+	cols := c.cols
+	rows := c.rows
+	c.mu.Unlock()
+
+	// 1. Mouse Wheel Scrolling
+	if evt.Button == MouseWheelUp {
+		if state.Mode != protocol.ModeScrollback {
+			c.enterScrollback()
+		}
+		c.mu.Lock()
+		maxOffset := len(c.scrollbackLines) - (rows - 2)
+		if maxOffset < 0 {
+			maxOffset = 0
+		}
+		c.scrollOffset += 3
+		if c.scrollOffset > maxOffset {
+			c.scrollOffset = maxOffset
+		}
+		c.mu.Unlock()
+		c.renderScrollback()
+		return
+	}
+
+	if evt.Button == MouseWheelDown {
+		if state.Mode == protocol.ModeScrollback {
+			c.mu.Lock()
+			c.scrollOffset -= 3
+			if c.scrollOffset <= 0 {
+				c.scrollOffset = 0
+				c.mu.Unlock()
+				c.exitScrollback()
+			} else {
+				c.mu.Unlock()
+				c.renderScrollback()
+			}
+		}
+		return
+	}
+
+	// 2. Mouse Drag (Dynamic Resize)
+	if evt.IsDrag {
+		if c.dragStart != nil && cols > 0 {
+			dx := evt.X - c.dragStart.X
+			if dx > 2 || dx < -2 {
+				delta := float64(dx) / float64(cols)
+				c.sendAction("resize_delta", map[string]string{
+					"delta": fmt.Sprintf("%.2f", delta),
+				})
+				c.dragStart.X = evt.X
+			}
+		}
+		return
+	}
+
+	// Release button terminates drag
+	if !evt.IsDown {
+		c.dragStart = nil
+		return
+	}
+
+	// 3. Mouse Click (Left Button)
+	if evt.Button == MouseBtnLeft && evt.IsDown {
+		// Row 1: Top header / workspaces
+		if evt.Y == 1 {
+			wsNum := c.findWorkspaceFromHeaderClick(evt.X)
+			if wsNum > 0 {
+				c.sendAction("switch_workspace", map[string]string{
+					"workspace": fmt.Sprintf("%d", wsNum),
+				})
+			}
+			return
+		}
+
+		// Rows 2..rows-1: Panes
+		for _, p := range state.Panes {
+			if evt.X >= p.X+1 && evt.X <= p.X+p.W && evt.Y >= p.Y+1 && evt.Y <= p.Y+p.H {
+				if !p.IsActive {
+					c.sendAction("focus_pane", map[string]string{
+						"pane_id": p.ID,
+					})
+				}
+				c.dragStart = &DragPoint{X: evt.X, Y: evt.Y}
+				break
+			}
+		}
+	}
 }
 
 func (c *Client) executePaletteItem(item PaletteItem) {
@@ -914,6 +1076,8 @@ func (c *Client) restoreTerminal() {
 		disableRawMode(int(os.Stdin.Fd()), c.origTerm)
 		c.origTerm = nil
 	}
+	// Disable mouse tracking
+	fmt.Print("\033[?1006l\033[?1002l\033[?1000l")
 	// Reset scrolling region to full screen
 	fmt.Print("\033[r")
 	// Exit alternate screen buffer

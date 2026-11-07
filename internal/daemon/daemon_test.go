@@ -185,4 +185,17 @@ func TestSessionSwapAndMove(t *testing.T) {
 	if ws1 := s.Workspaces[1]; ws1 == nil || ws1.ActivePaneID() == "" {
 		t.Errorf("expected workspace 1 to still have a valid pane")
 	}
+
+	// FocusPane test
+	s.SwitchWorkspace(1)
+	ws1 := s.Workspaces[1]
+	currentActive := ws1.ActivePaneID()
+	leaves := ws1.Tree.ListLeafPanes()
+	if len(leaves) > 0 {
+		s.FocusPane(leaves[0])
+		if ws1.ActivePaneID() != leaves[0] {
+			t.Errorf("expected focus on %s, got %s", leaves[0], ws1.ActivePaneID())
+		}
+	}
+	_ = currentActive
 }

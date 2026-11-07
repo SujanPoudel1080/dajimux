@@ -20,6 +20,7 @@ type Config struct {
 type GeneralConfig struct {
 	DefaultShell    string `yaml:"default_shell"`
 	ScrollbackLines int    `yaml:"scrollback_lines"`
+	MouseSupport    bool   `yaml:"mouse_support"`
 }
 
 // InputConfig holds keybinding and modal behavior settings.
@@ -50,6 +51,7 @@ func DefaultConfig() *Config {
 		General: GeneralConfig{
 			DefaultShell:    shell,
 			ScrollbackLines: 5000,
+			MouseSupport:    true,
 		},
 		Input: InputConfig{
 			PrefixMode:       "modal",
@@ -225,6 +227,8 @@ general:
   default_shell: ""
   # Maximum lines of scrollback history per pane
   scrollback_lines: 5000
+  # Enable terminal mouse support (click to focus, drag to resize, wheel to scroll)
+  mouse_support: true
 
 input:
   # Mode switching behavior: "modal" (Vim Space+Space)

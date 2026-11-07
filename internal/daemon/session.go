@@ -212,6 +212,23 @@ func (s *Session) Navigate(dir bsp.NavDirection) {
 	}
 }
 
+// FocusPane focuses the pane with paneID in the active workspace.
+func (s *Session) FocusPane(paneID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ws := s.Workspaces[s.ActiveWS]
+	if ws == nil {
+		return
+	}
+
+	node := ws.Tree.FindNode(paneID)
+	if node != nil && ws.ActivePaneID() != paneID {
+		ws.SetActivePane(paneID)
+		go s.NotifyState()
+	}
+}
+
 // SwapActiveWithNext swaps the currently focused pane with the next pane in the workspace tree.
 func (s *Session) SwapActiveWithNext() error {
 	s.mu.Lock()

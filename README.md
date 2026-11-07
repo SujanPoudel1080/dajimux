@@ -129,6 +129,16 @@ dajimux peer connect remote.devbox.internal:7474 --token "my-secret-key" main
   - `y` : Yank visible text to system clipboard via OSC 52
   - `q` / `Esc` / `Enter` : Exit scrollback mode
 
+## Mouse Support & Gestures
+
+dajimux supports native SGR 1006 extended mouse reporting out of the box:
+- **Click Pane**: Focuses that pane immediately.
+- **Click Workspace Tab**: Click any workspace tab (`1`..`9`) in the header to switch to it.
+- **Mouse Wheel**:
+  - Scroll Up inside any pane to automatically enter Scrollback Vi-mode.
+  - Scroll Down to browse back down to real-time shell output.
+- **Drag Split Borders**: Click and drag along split borders to resize adjacent panes in real time.
+
 ## Configuration
 
 Customize keybindings, modal switching, and colors via `~/.config/dajimux/config.yaml`:
