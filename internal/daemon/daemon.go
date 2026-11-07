@@ -387,6 +387,11 @@ func (d *Daemon) handleAction(s *Session, action protocol.ActionPayload) {
 		s.Navigate(bsp.NavUp)
 	case "nav_right":
 		s.Navigate(bsp.NavRight)
+	case "focus_pane":
+		paneID := action.Params["pane_id"]
+		if paneID != "" {
+			s.FocusPane(paneID)
+		}
 	case "swap_next":
 		_ = s.SwapActiveWithNext()
 	case "swap_left":
