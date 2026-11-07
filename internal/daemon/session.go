@@ -7,6 +7,7 @@ import (
 	"github.com/SujanPoudel1080/dajimux/internal/agent"
 	"github.com/SujanPoudel1080/dajimux/internal/bsp"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
+	"github.com/SujanPoudel1080/dajimux/internal/state"
 )
 
 // Session manages workspaces, panes, and agent telemetry for a named session.
@@ -485,4 +486,123 @@ func (s *Session) NotifyState() {
 	if s.OnStateChange != nil {
 		s.OnStateChange(s.GetLayoutState())
 	}
+}
+
+// ToSerialized converts the live session state into a serializable structure.
+func (s *Session) ToSerialized() *state.SerializedSession {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ss := &state.SerializedSession{
+		Name:       s.Name,
+		ActiveWS:   s.ActiveWS,
+		Workspaces: make(map[int]*state.SerializedWorkspace),
+		Panes:      make(map[string]*state.SerializedPane),
+	}
+
+	for id, p := range s.Panes {
+		p.mu.RLock()
+		ss.Panes[id] = &state.SerializedPane{
+			ID:         p.ID,
+			Title:      p.Title,
+			Cwd:        p.Cwd,
+			AgentState: p.AgentState,
+			AgentBadge: p.AgentBadge,
+		}
+		p.mu.RUnlock()
+	}
+
+	for id, ws := range s.Workspaces {
+		ws.mu.RLock()
+		sws := &state.SerializedWorkspace{
+			ID:           ws.ID,
+			Name:         ws.Name,
+			ActivePaneID: ws.Tree.ActivePaneID,
+			Tree:         state.SerializeBSPNode(ws.Tree.Root),
+		}
+		ws.mu.RUnlock()
+		ss.Workspaces[id] = sws
+	}
+
+	return ss
+}
+
+// RestoreSessionFromSerialized reconstructs a live Session from saved state.
+func RestoreSessionFromSerialized(ss *state.SerializedSession, cols, rows int, onStateChange func(protocol.LayoutStatePayload)) (*Session, error) {
+	if cols <= 0 {
+		cols = 80
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+
+	s := &Session{
+		Name:          ss.Name,
+		Workspaces:    make(map[int]*Workspace),
+		ActiveWS:      ss.ActiveWS,
+		Panes:         make(map[string]*Pane),
+		Mode:          protocol.ModeInsert,
+		Cols:          cols,
+		Rows:          rows,
+		paneCounter:   1,
+		OnStateChange: onStateChange,
+	}
+
+	s.Broker = agent.NewBroker(func(status *agent.PaneStatus) {
+		s.mu.Lock()
+		if pane, ok := s.Panes[status.PaneID]; ok {
+			pane.AgentState = status.State
+			pane.AgentBadge = status.Badge
+		}
+		s.mu.Unlock()
+		s.NotifyState()
+	})
+
+	// Recreate panes and launch processes in their respective CWDs
+	for id, sp := range ss.Panes {
+		pane := NewPane(id, sp.Title)
+		pane.Cwd = sp.Cwd
+		pane.AgentState = sp.AgentState
+		pane.AgentBadge = sp.AgentBadge
+		s.Panes[id] = pane
+
+		env := []string{
+			fmt.Sprintf("DAJIMUX_SESSION=%s", s.Name),
+		}
+		_ = pane.StartWithCwd("", cols, rows-2, env, sp.Cwd)
+	}
+
+	// Recreate workspaces and BSP trees
+	for id, sws := range ss.Workspaces {
+		ws := &Workspace{
+			ID:   sws.ID,
+			Name: sws.Name,
+			Tree: &bsp.Tree{
+				Root:          state.DeserializeBSPNode(sws.Tree, nil),
+				ActivePaneID:  sws.ActivePaneID,
+				MonoclePaneID: "",
+			},
+		}
+		ws.Layout(cols, rows)
+		s.Workspaces[id] = ws
+		s.syncPaneSizes(ws)
+	}
+
+	if s.ActiveWS == 0 || s.Workspaces[s.ActiveWS] == nil {
+		s.ActiveWS = 1
+	}
+
+	// Ensure there is at least one workspace
+	if len(s.Workspaces) == 0 {
+		initialPaneID := s.nextPaneID()
+		initialPane := NewPane(initialPaneID, "shell")
+		s.Panes[initialPaneID] = initialPane
+		ws := NewWorkspace(1, "main", initialPaneID)
+		ws.Layout(cols, rows)
+		s.Workspaces[1] = ws
+		_ = initialPane.Start("", ws.Bounds.W, ws.Bounds.H, nil)
+	}
+
+	s.paneCounter = len(s.Panes) + 1
+	return s, nil
 }

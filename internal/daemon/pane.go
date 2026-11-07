@@ -18,6 +18,7 @@ type Pane struct {
 	mu          sync.RWMutex
 	ID          string
 	Title       string
+	Cwd         string
 	PTY         *os.File
 	Cmd         *exec.Cmd
 	Bounds      bsp.Rect
@@ -46,6 +47,11 @@ func NewPane(id, title string) *Pane {
 
 // Start spawns an interactive login shell inside a new pseudoterminal.
 func (p *Pane) Start(shellPath string, cols, rows int, env []string) error {
+	return p.StartWithCwd(shellPath, cols, rows, env, "")
+}
+
+// StartWithCwd spawns an interactive login shell inside a pseudoterminal with working directory cwd.
+func (p *Pane) StartWithCwd(shellPath string, cols, rows int, env []string, cwd string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -65,8 +71,20 @@ func (p *Pane) Start(shellPath string, cols, rows int, env []string) error {
 
 	p.Bounds = bsp.Rect{W: cols, H: rows}
 
+	if cwd != "" {
+		p.Cwd = cwd
+	} else if p.Cwd == "" {
+		wd, err := os.Getwd()
+		if err == nil {
+			p.Cwd = wd
+		}
+	}
+
 	// Launch as interactive login shell
 	cmd := exec.Command(shellPath, "-l")
+	if p.Cwd != "" {
+		cmd.Dir = p.Cwd
+	}
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Env = append(cmd.Env,
 		fmt.Sprintf("DAJIMUX_PANE_ID=%s", p.ID),

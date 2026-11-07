@@ -72,6 +72,14 @@ dajimux list
 # Launch or attach to a named session
 dajimux attach my-project
 
+# Restore session from persisted state
+dajimux restore my-project
+
+# Install / manage background system service (launchd on macOS, systemd on Linux)
+dajimux service install      # Registers and starts background daemon service
+dajimux service status       # Checks daemon service status
+dajimux service uninstall    # Unregisters and disables daemon service
+
 # Initialize or view configuration
 dajimux config init          # Generates ~/.config/dajimux/config.yaml
 dajimux config path          # Prints path to config file
