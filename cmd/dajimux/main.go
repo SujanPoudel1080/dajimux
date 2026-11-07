@@ -14,6 +14,8 @@ import (
 	"github.com/SujanPoudel1080/dajimux/internal/daemon"
 	"github.com/SujanPoudel1080/dajimux/internal/peer"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
+	"github.com/SujanPoudel1080/dajimux/internal/service"
+	"github.com/SujanPoudel1080/dajimux/internal/state"
 )
 
 var (
@@ -65,6 +67,16 @@ func main() {
 	case "config":
 		runConfigCmd(os.Args[2:])
 
+	case "restore":
+		sessionName := "main"
+		if len(os.Args) > 2 {
+			sessionName = os.Args[2]
+		}
+		runRestoreCmd(sessionName)
+
+	case "service":
+		runServiceCmd(os.Args[2:])
+
 	case "help", "--help", "-h":
 		printHelp()
 
@@ -87,6 +99,8 @@ Usage:
   dajimux daemon               Run the background session daemon
   dajimux stop / kill-server   Gracefully stop the background daemon
   dajimux attach <name>        Attach to a named session
+  dajimux restore [name]       Restore session from persisted state
+  dajimux service [action]     Manage daemon service (install, status, uninstall)
   dajimux config [init|path]   Manage user configuration file
   dajimux agent status [flags] Report agent state & telemetry badge
   dajimux msg send [flags]     Send message to another pane or channel
@@ -157,6 +171,67 @@ func runConfigCmd(args []string) {
 		fmt.Printf("  Default Shell:      %s\n", cfg.General.DefaultShell)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown config action: %s\n", args[0])
+		os.Exit(1)
+	}
+}
+
+func runRestoreCmd(sessionName string) {
+	st, err := state.LoadStateFromFile("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load session state: %v\n", err)
+		os.Exit(1)
+	}
+	if len(st.Sessions) == 0 {
+		fmt.Println("No persisted sessions found in", state.DefaultStatePath())
+		return
+	}
+	if _, ok := st.Sessions[sessionName]; !ok {
+		fmt.Printf("Session %q not found in persisted state. Available sessions:\n", sessionName)
+		for name := range st.Sessions {
+			fmt.Printf("  - %s\n", name)
+		}
+		return
+	}
+
+	fmt.Printf("Restoring session %q from %s...\n", sessionName, state.DefaultStatePath())
+	runDefaultClient(sessionName)
+}
+
+func runServiceCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: dajimux service [install | status | uninstall]")
+		return
+	}
+
+	mgr, err := service.NewServiceManager()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Service manager error: %v\n", err)
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "install":
+		path, err := mgr.Install()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to install service: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("dajimux daemon service installed successfully:\n  %s\n", path)
+	case "status":
+		status, err := mgr.Status()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Service status error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(status)
+	case "uninstall":
+		if err := mgr.Uninstall(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to uninstall service: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("dajimux daemon service uninstalled.")
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown service command %q. Usage: dajimux service [install | status | uninstall]\n", args[0])
 		os.Exit(1)
 	}
 }

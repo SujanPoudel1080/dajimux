@@ -11,6 +11,7 @@ import (
 
 	"github.com/SujanPoudel1080/dajimux/internal/bsp"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
+	"github.com/SujanPoudel1080/dajimux/internal/state"
 )
 
 // Daemon coordinates sessions, clients, and IPC sockets.
@@ -103,6 +104,19 @@ func (d *Daemon) GetOrCreateSession(name string, cols, rows int) (*Session, erro
 
 	if s, exists := d.Sessions[name]; exists {
 		return s, nil
+	}
+
+	// Try restoring from persisted session state
+	if st, err := state.LoadStateFromFile(""); err == nil && st != nil {
+		if ss, ok := st.Sessions[name]; ok {
+			s, err := RestoreSessionFromSerialized(ss, cols, rows, func(state protocol.LayoutStatePayload) {
+				d.broadcastLayoutState(name, state)
+			})
+			if err == nil {
+				d.Sessions[name] = s
+				return s, nil
+			}
+		}
 	}
 
 	s, err := NewSession(name, cols, rows, func(state protocol.LayoutStatePayload) {
@@ -450,11 +464,56 @@ func (d *Daemon) broadcastLayoutState(sessionName string, state protocol.LayoutS
 	}
 }
 
-// Stop cleanly closes sockets and terminates child processes.
+// SaveState serializes all active sessions to disk.
+func (d *Daemon) SaveState(path string) error {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	st := &state.SerializedState{
+		Version:  1,
+		SavedAt:  time.Now(),
+		Sessions: make(map[string]*state.SerializedSession),
+	}
+
+	for name, sess := range d.Sessions {
+		st.Sessions[name] = sess.ToSerialized()
+	}
+
+	return state.SaveStateToFile(path, st)
+}
+
+// RestoreSessions reads the persisted session snapshot and restores sessions into memory.
+func (d *Daemon) RestoreSessions(path string) error {
+	st, err := state.LoadStateFromFile(path)
+	if err != nil {
+		return err
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	for name, ss := range st.Sessions {
+		if _, exists := d.Sessions[name]; !exists {
+			sess, err := RestoreSessionFromSerialized(ss, 80, 24, func(lsp protocol.LayoutStatePayload) {
+				d.broadcastLayoutState(name, lsp)
+			})
+			if err == nil {
+				d.Sessions[name] = sess
+			}
+		}
+	}
+
+	return nil
+}
+
+// Stop cleanly closes sockets and terminates child processes, persisting state first.
 func (d *Daemon) Stop() {
 	d.mu.Lock()
 	d.isClosing = true
 	d.mu.Unlock()
+
+	// Automatically persist state on stop
+	_ = d.SaveState("")
 
 	if d.listener != nil {
 		_ = d.listener.Close()

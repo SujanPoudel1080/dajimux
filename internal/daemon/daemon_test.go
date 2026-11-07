@@ -199,3 +199,45 @@ func TestSessionSwapAndMove(t *testing.T) {
 	}
 	_ = currentActive
 }
+
+func TestDaemonSaveAndRestoreState(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dajimux-persist-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	statePath := filepath.Join(tmpDir, "session_state.json")
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	d := NewDaemon(sockPath)
+	sess, err := d.GetOrCreateSession("persist-test", 80, 24)
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	// Split to create 2 panes
+	_, err = sess.SplitActive(bsp.SplitVertical)
+	if err != nil {
+		t.Fatalf("failed to split: %v", err)
+	}
+
+	// Save daemon state
+	if err := d.SaveState(statePath); err != nil {
+		t.Fatalf("SaveState failed: %v", err)
+	}
+
+	// Create new daemon instance and restore
+	d2 := NewDaemon(filepath.Join(tmpDir, "test2.sock"))
+	if err := d2.RestoreSessions(statePath); err != nil {
+		t.Fatalf("RestoreSessions failed: %v", err)
+	}
+
+	restoredSess := d2.Sessions["persist-test"]
+	if restoredSess == nil {
+		t.Fatalf("expected restored session 'persist-test'")
+	}
+	if len(restoredSess.Panes) != 2 {
+		t.Errorf("expected 2 panes in restored session, got %d", len(restoredSess.Panes))
+	}
+}
