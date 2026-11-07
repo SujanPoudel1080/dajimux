@@ -34,6 +34,10 @@ const (
 	// Session & Server Management
 	MsgListSessions    MessageType = "list_sessions"
 	MsgListSessionsRes MessageType = "list_sessions_res"
+	MsgListPanes       MessageType = "list_panes"
+	MsgListPanesRes    MessageType = "list_panes_res"
+	MsgSpawnPane       MessageType = "spawn_pane"
+	MsgSpawnPaneRes    MessageType = "spawn_pane_res"
 	MsgStopServer      MessageType = "stop_server"
 	MsgStopServerRes   MessageType = "stop_server_res"
 )
@@ -151,6 +155,45 @@ type SessionSummary struct {
 // ListSessionsResponse contains the list of all active sessions in the daemon.
 type ListSessionsResponse struct {
 	Sessions []SessionSummary `json:"sessions"`
+}
+
+// ListPanesRequest requests detailed layout and process state for panes.
+type ListPanesRequest struct {
+	SessionName string `json:"session_name,omitempty"`
+}
+
+// DetailedPaneInfo contains process, geometry, and agent telemetry for a pane.
+type DetailedPaneInfo struct {
+	SessionName string `json:"session_name"`
+	WorkspaceID int    `json:"workspace_id"`
+	PaneID      string `json:"pane_id"`
+	Title       string `json:"title"`
+	Cwd         string `json:"cwd"`
+	IsActive    bool   `json:"is_active"`
+	AgentState  string `json:"agent_state,omitempty"`
+	AgentBadge  string `json:"agent_badge,omitempty"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+}
+
+// ListPanesResponse returns detailed information for queried panes.
+type ListPanesResponse struct {
+	Panes []DetailedPaneInfo `json:"panes"`
+}
+
+// SpawnPaneRequest dynamically creates a new pane in a session.
+type SpawnPaneRequest struct {
+	SessionName string `json:"session_name"`
+	Direction   string `json:"direction,omitempty"` // "horizontal" or "vertical"
+	Cwd         string `json:"cwd,omitempty"`
+	Command     string `json:"command,omitempty"`
+}
+
+// SpawnPaneResponse returns the result of spawning a pane.
+type SpawnPaneResponse struct {
+	Success bool   `json:"success"`
+	PaneID  string `json:"pane_id,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // EnvelopeWriter provides synchronized writes so multiple goroutines can

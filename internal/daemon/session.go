@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/SujanPoudel1080/dajimux/internal/agent"
 	"github.com/SujanPoudel1080/dajimux/internal/bsp"
@@ -142,6 +143,60 @@ func (s *Session) SplitActive(dir bsp.SplitDirection) (*Pane, error) {
 
 	// Update bounds of existing panes
 	s.syncPaneSizes(ws)
+
+	go s.NotifyState()
+	return newPane, nil
+}
+
+// SpawnPane dynamically splits the active pane and launches a shell with optional CWD and initial command.
+func (s *Session) SpawnPane(dir bsp.SplitDirection, cwd string, initialCmd string) (*Pane, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ws := s.Workspaces[s.ActiveWS]
+	if ws == nil {
+		return nil, fmt.Errorf("no active workspace")
+	}
+
+	targetPaneID := ws.ActivePaneID()
+	newID := s.nextPaneID()
+	newPane := NewPane(newID, "shell")
+	s.Panes[newID] = newPane
+
+	_, err := ws.Tree.Split(targetPaneID, newID, dir, 0.5)
+	if err != nil {
+		delete(s.Panes, newID)
+		return nil, err
+	}
+
+	ws.Layout(s.Cols, s.Rows)
+
+	node := ws.Tree.FindNode(newID)
+	env := []string{
+		fmt.Sprintf("DAJIMUX_SESSION=%s", s.Name),
+		fmt.Sprintf("DAJIMUX_WORKSPACE=%d", s.ActiveWS),
+	}
+
+	w, h := 40, 12
+	if node != nil {
+		w, h = node.Rect.W, node.Rect.H
+	}
+
+	if err := newPane.StartWithCwd("", w, h, env, cwd); err != nil {
+		_ = ws.Tree.Close(newID)
+		delete(s.Panes, newID)
+		return nil, fmt.Errorf("failed to spawn pane process: %w", err)
+	}
+
+	ws.SetActivePane(newID)
+	s.syncPaneSizes(ws)
+
+	if initialCmd != "" {
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			_, _ = newPane.Write([]byte(initialCmd + "\n"))
+		}()
+	}
 
 	go s.NotifyState()
 	return newPane, nil

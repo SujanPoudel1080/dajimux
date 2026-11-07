@@ -177,9 +177,18 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 			}
 
 		case protocol.MsgInput:
-			if attachedSession != nil {
-				var p protocol.InputPayload
-				if err := json.Unmarshal(env.Payload, &p); err == nil {
+			var p protocol.InputPayload
+			if err := json.Unmarshal(env.Payload, &p); err == nil {
+				if env.PaneID != "" {
+					d.mu.RLock()
+					for _, s := range d.Sessions {
+						if targetPane, ok := s.Panes[env.PaneID]; ok {
+							_, _ = targetPane.Write(p.Data)
+							break
+						}
+					}
+					d.mu.RUnlock()
+				} else if attachedSession != nil {
 					if active := attachedSession.ActivePane(); active != nil {
 						_, _ = active.Write(p.Data)
 					}
@@ -291,6 +300,103 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 				Type:    protocol.MsgListSessionsRes,
 				Payload: resData,
 			})
+
+		case protocol.MsgListPanes:
+			var req protocol.ListPanesRequest
+			_ = json.Unmarshal(env.Payload, &req)
+
+			d.mu.RLock()
+			var panes []protocol.DetailedPaneInfo
+			for name, sess := range d.Sessions {
+				if req.SessionName != "" && req.SessionName != name {
+					continue
+				}
+				sess.mu.RLock()
+				for wsID, ws := range sess.Workspaces {
+					ws.mu.RLock()
+					activePaneID := ws.Tree.ActivePaneID
+					for _, pid := range ws.Tree.ListLeafPanes() {
+						node := ws.Tree.FindNode(pid)
+						pane := sess.Panes[pid]
+						if node != nil && pane != nil {
+							pane.mu.RLock()
+							panes = append(panes, protocol.DetailedPaneInfo{
+								SessionName: name,
+								WorkspaceID: wsID,
+								PaneID:      pid,
+								Title:       pane.Title,
+								Cwd:         pane.Cwd,
+								IsActive:    pid == activePaneID && sess.ActiveWS == wsID,
+								AgentState:  pane.AgentState,
+								AgentBadge:  pane.AgentBadge,
+								Width:       node.Rect.W,
+								Height:      node.Rect.H,
+							})
+							pane.mu.RUnlock()
+						}
+					}
+					ws.mu.RUnlock()
+				}
+				sess.mu.RUnlock()
+			}
+			d.mu.RUnlock()
+
+			resData, _ := json.Marshal(protocol.ListPanesResponse{Panes: panes})
+			_ = writer.Write(protocol.Envelope{
+				Type:    protocol.MsgListPanesRes,
+				Payload: resData,
+			})
+
+		case protocol.MsgSpawnPane:
+			var req protocol.SpawnPaneRequest
+			_ = json.Unmarshal(env.Payload, &req)
+
+			sessionName := req.SessionName
+			if sessionName == "" {
+				sessionName = "main"
+			}
+
+			d.mu.RLock()
+			sess := d.Sessions[sessionName]
+			d.mu.RUnlock()
+
+			if sess == nil {
+				resData, _ := json.Marshal(protocol.SpawnPaneResponse{
+					Success: false,
+					Error:   fmt.Sprintf("session %q not found", sessionName),
+				})
+				_ = writer.Write(protocol.Envelope{
+					Type:    protocol.MsgSpawnPaneRes,
+					Payload: resData,
+				})
+				continue
+			}
+
+			dir := bsp.SplitVertical
+			if req.Direction == "horizontal" {
+				dir = bsp.SplitHorizontal
+			}
+
+			newPane, err := sess.SpawnPane(dir, req.Cwd, req.Command)
+			if err != nil {
+				resData, _ := json.Marshal(protocol.SpawnPaneResponse{
+					Success: false,
+					Error:   err.Error(),
+				})
+				_ = writer.Write(protocol.Envelope{
+					Type:    protocol.MsgSpawnPaneRes,
+					Payload: resData,
+				})
+			} else {
+				resData, _ := json.Marshal(protocol.SpawnPaneResponse{
+					Success: true,
+					PaneID:  newPane.ID,
+				})
+				_ = writer.Write(protocol.Envelope{
+					Type:    protocol.MsgSpawnPaneRes,
+					Payload: resData,
+				})
+			}
 
 		case protocol.MsgStopServer:
 			_ = writer.Write(protocol.Envelope{

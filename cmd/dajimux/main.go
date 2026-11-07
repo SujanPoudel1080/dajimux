@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"github.com/SujanPoudel1080/dajimux/internal/client"
 	"github.com/SujanPoudel1080/dajimux/internal/config"
 	"github.com/SujanPoudel1080/dajimux/internal/daemon"
+	"github.com/SujanPoudel1080/dajimux/internal/mcp"
 	"github.com/SujanPoudel1080/dajimux/internal/peer"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
 	"github.com/SujanPoudel1080/dajimux/internal/service"
@@ -77,6 +79,9 @@ func main() {
 	case "service":
 		runServiceCmd(os.Args[2:])
 
+	case "mcp":
+		runMCPCmd(os.Args[2:])
+
 	case "help", "--help", "-h":
 		printHelp()
 
@@ -101,6 +106,7 @@ Usage:
   dajimux attach <name>        Attach to a named session
   dajimux restore [name]       Restore session from persisted state
   dajimux service [action]     Manage daemon service (install, status, uninstall)
+  dajimux mcp [flags]          Run Model Context Protocol (MCP) server over stdio
   dajimux config [init|path]   Manage user configuration file
   dajimux agent status [flags] Report agent state & telemetry badge
   dajimux msg send [flags]     Send message to another pane or channel
@@ -232,6 +238,19 @@ func runServiceCmd(args []string) {
 		fmt.Println("dajimux daemon service uninstalled.")
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown service command %q. Usage: dajimux service [install | status | uninstall]\n", args[0])
+		os.Exit(1)
+	}
+}
+
+func runMCPCmd(args []string) {
+	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
+	sockPath := fs.String("socket", daemon.DefaultSocketPath(), "Path to daemon unix domain socket")
+	_ = fs.Parse(args)
+
+	bridge := mcp.NewSocketDaemonBridge(*sockPath)
+	srv := mcp.NewServer(bridge, version)
+	if err := srv.Run(os.Stdin, os.Stdout); err != nil && err != io.EOF {
+		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
 		os.Exit(1)
 	}
 }
