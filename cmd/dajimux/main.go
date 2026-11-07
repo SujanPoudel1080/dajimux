@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SujanPoudel1080/dajimux/internal/client"
+	"github.com/SujanPoudel1080/dajimux/internal/config"
 	"github.com/SujanPoudel1080/dajimux/internal/daemon"
 	"github.com/SujanPoudel1080/dajimux/internal/peer"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
@@ -61,6 +62,9 @@ func main() {
 	case "peer":
 		runPeerCmd(os.Args[2:])
 
+	case "config":
+		runConfigCmd(os.Args[2:])
+
 	case "help", "--help", "-h":
 		printHelp()
 
@@ -83,6 +87,7 @@ Usage:
   dajimux daemon               Run the background session daemon
   dajimux stop / kill-server   Gracefully stop the background daemon
   dajimux attach <name>        Attach to a named session
+  dajimux config [init|path]   Manage user configuration file
   dajimux agent status [flags] Report agent state & telemetry badge
   dajimux msg send [flags]     Send message to another pane or channel
   dajimux pane capture [flags] Capture lines from a sibling pane
@@ -94,8 +99,11 @@ Vim Modal Controls:
   Space + Space                Switch from INSERT mode to NORMAL mode
   In NORMAL Mode:
     h, j, k, l                 Spatial pane navigation
+    w                          Swap active pane with next pane
+    H, J, K, L                 Spatial pane swap (left, down, up, right)
     s                          Split pane horizontally
     v                          Split pane vertically
+    m <1-9>                    Move active pane to workspace 1..9
     x                          Close focused pane
     z                          Toggle monocle (fullscreen zoom)
     d                          Detach session (daemon keeps running)
@@ -106,6 +114,51 @@ Vim Modal Controls:
     i, a, Enter                Return to INSERT mode
 `
 	fmt.Print(helpText)
+}
+
+func loadClientConfig() *config.Config {
+	var cfgPath string
+	for i := 1; i < len(os.Args); i++ {
+		if (os.Args[i] == "--config" || os.Args[i] == "-c") && i+1 < len(os.Args) {
+			cfgPath = os.Args[i+1]
+			break
+		}
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not load config %s: %v\n", cfgPath, err)
+		return config.DefaultConfig()
+	}
+	return cfg
+}
+
+func runConfigCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: dajimux config [path | init | show]")
+		return
+	}
+
+	switch args[0] {
+	case "path":
+		fmt.Println(config.DefaultConfigPath())
+	case "init":
+		path, err := config.GenerateDefaultConfigFile("")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating config file: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Default configuration created at: %s\n", path)
+	case "show":
+		cfg := loadClientConfig()
+		fmt.Printf("Config (from %s):\n", config.DefaultConfigPath())
+		fmt.Printf("  Prefix Mode:        %s\n", cfg.Input.PrefixMode)
+		fmt.Printf("  Modal Double-Tap:   %d ms\n", cfg.Input.ModalDoubleTapMs)
+		fmt.Printf("  Scrollback Lines:   %d\n", cfg.General.ScrollbackLines)
+		fmt.Printf("  Default Shell:      %s\n", cfg.General.DefaultShell)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown config action: %s\n", args[0])
+		os.Exit(1)
+	}
 }
 
 func runDefaultClient(sessionName string) {
@@ -134,7 +187,8 @@ func runDefaultClient(sessionName string) {
 		}
 	}
 
-	cli := client.NewClient(sockPath, sessionName)
+	cfg := loadClientConfig()
+	cli := client.NewClientWithConfig(sockPath, sessionName, cfg)
 	if err := cli.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "dajimux error: %v\n", err)
 		os.Exit(1)

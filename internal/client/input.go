@@ -11,6 +11,7 @@ type InputHandler struct {
 	CurrentMode        protocol.Mode
 	doubleTapThreshold time.Duration
 	lastSpaceTime      time.Time
+	pendingMove        bool
 }
 
 // ActionType represents an action triggered in NORMAL or RESIZE mode.
@@ -48,6 +49,12 @@ const (
 	ActionScrollBottom     ActionType = "scroll_bottom"
 	ActionYank             ActionType = "yank"
 	ActionDetach           ActionType = "detach"
+	ActionSwapNext         ActionType = "swap_next"
+	ActionSwapLeft         ActionType = "swap_left"
+	ActionSwapDown         ActionType = "swap_down"
+	ActionSwapUp           ActionType = "swap_up"
+	ActionSwapRight        ActionType = "swap_right"
+	ActionMoveToWorkspace  ActionType = "move_pane_ws"
 )
 
 // InputResult contains the outcome of processing user keystrokes.
@@ -65,6 +72,13 @@ func NewInputHandler() *InputHandler {
 	return &InputHandler{
 		CurrentMode:        protocol.ModeInsert,
 		doubleTapThreshold: 280 * time.Millisecond,
+	}
+}
+
+// SetDoubleTapThreshold overrides the default 280ms double-tap duration.
+func (h *InputHandler) SetDoubleTapThreshold(d time.Duration) {
+	if d > 0 {
+		h.doubleTapThreshold = d
 	}
 }
 
@@ -127,6 +141,19 @@ func (h *InputHandler) handleNormalMode(data []byte) InputResult {
 	if len(data) == 1 {
 		b := data[0]
 
+		// If pending workspace move operator ('m' was pressed)
+		if h.pendingMove {
+			h.pendingMove = false
+			if b >= '1' && b <= '9' {
+				return InputResult{
+					Action:       ActionMoveToWorkspace,
+					WorkspaceNum: int(b - '0'),
+				}
+			}
+			// Cancel pending move if any other key pressed
+			return InputResult{Action: ActionNone}
+		}
+
 		// Switch back to Insert Mode: 'i', 'a', or Enter (0x0d)
 		if b == 'i' || b == 'a' || b == '\r' || b == '\n' {
 			h.CurrentMode = protocol.ModeInsert
@@ -143,6 +170,19 @@ func (h *InputHandler) handleNormalMode(data []byte) InputResult {
 			return InputResult{Action: ActionNavUp}
 		case 'l':
 			return InputResult{Action: ActionNavRight}
+		case 'H':
+			return InputResult{Action: ActionSwapLeft}
+		case 'J':
+			return InputResult{Action: ActionSwapDown}
+		case 'K':
+			return InputResult{Action: ActionSwapUp}
+		case 'L':
+			return InputResult{Action: ActionSwapRight}
+		case 'w': // Swap with next pane in tree
+			return InputResult{Action: ActionSwapNext}
+		case 'm': // Move pane to workspace operator
+			h.pendingMove = true
+			return InputResult{Action: ActionNone}
 		case 's': // Split Horizontal
 			return InputResult{Action: ActionSplitHorizontal}
 		case 'v': // Split Vertical

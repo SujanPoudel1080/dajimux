@@ -7,10 +7,22 @@ import (
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
 )
 
-// RenderBorders generates ANSI strings to draw pane frames, titles, and agent status badges.
+// RenderBorders generates ANSI strings to draw pane frames, titles, and agent status badges with default colors.
 func RenderBorders(panes []protocol.PaneInfo, cols, rows int, isMonocle bool) string {
+	return RenderBordersWithTheme(panes, cols, rows, isMonocle, "", "")
+}
+
+// RenderBordersWithTheme generates ANSI strings with custom active/inactive border colors.
+func RenderBordersWithTheme(panes []protocol.PaneInfo, cols, rows int, isMonocle bool, activeColor, inactiveColor string) string {
 	if len(panes) <= 1 || isMonocle {
 		return ""
+	}
+
+	if activeColor == "" {
+		activeColor = "\033[1m\033[38;5;51m" // Bold Bright Cyan
+	}
+	if inactiveColor == "" {
+		inactiveColor = "\033[38;5;240m"     // Dim Gray
 	}
 
 	var b strings.Builder
@@ -20,10 +32,9 @@ func RenderBorders(panes []protocol.PaneInfo, cols, rows int, isMonocle bool) st
 			continue
 		}
 
-		// Border color: Active = Cyan, Inactive = Dim Gray
-		color := "\033[38;5;240m"
+		color := inactiveColor
 		if p.IsActive {
-			color = "\033[1m\033[38;5;51m" // Bold Bright Cyan
+			color = activeColor
 		}
 		reset := "\033[0m"
 

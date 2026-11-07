@@ -212,6 +212,112 @@ func (s *Session) Navigate(dir bsp.NavDirection) {
 	}
 }
 
+// SwapActiveWithNext swaps the currently focused pane with the next pane in the workspace tree.
+func (s *Session) SwapActiveWithNext() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ws := s.Workspaces[s.ActiveWS]
+	if ws == nil {
+		return fmt.Errorf("no active workspace")
+	}
+
+	if err := ws.Tree.SwapNext(); err != nil {
+		return err
+	}
+
+	ws.Layout(s.Cols, s.Rows)
+	s.syncPaneSizes(ws)
+	go s.NotifyState()
+	return nil
+}
+
+// SwapActive swaps the currently focused pane with its spatial neighbor in direction dir.
+func (s *Session) SwapActive(dir bsp.NavDirection) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ws := s.Workspaces[s.ActiveWS]
+	if ws == nil {
+		return fmt.Errorf("no active workspace")
+	}
+
+	if err := ws.Tree.SwapDirection(dir); err != nil {
+		return err
+	}
+
+	ws.Layout(s.Cols, s.Rows)
+	s.syncPaneSizes(ws)
+	go s.NotifyState()
+	return nil
+}
+
+// MoveActiveToWorkspace moves the currently focused pane to targetWS (1..9).
+func (s *Session) MoveActiveToWorkspace(targetWS int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if targetWS < 1 || targetWS > 9 {
+		return fmt.Errorf("invalid workspace %d", targetWS)
+	}
+
+	if targetWS == s.ActiveWS {
+		return nil
+	}
+
+	srcWS := s.Workspaces[s.ActiveWS]
+	if srcWS == nil {
+		return fmt.Errorf("no active workspace")
+	}
+
+	activePaneID := srcWS.ActivePaneID()
+	if activePaneID == "" {
+		return fmt.Errorf("no active pane to move")
+	}
+
+	_, exists := s.Panes[activePaneID]
+	if !exists {
+		return fmt.Errorf("pane %s not found", activePaneID)
+	}
+
+	// Detach from current workspace
+	srcLeaves := srcWS.Tree.ListLeafPanes()
+	if len(srcLeaves) <= 1 {
+		// Spawn replacement shell in source workspace so it is not left empty
+		newID := s.nextPaneID()
+		replacementPane := NewPane(newID, "shell")
+		s.Panes[newID] = replacementPane
+		env := []string{
+			fmt.Sprintf("DAJIMUX_SESSION=%s", s.Name),
+			fmt.Sprintf("DAJIMUX_WORKSPACE=%d", s.ActiveWS),
+		}
+		_ = replacementPane.Start("", srcWS.Bounds.W, srcWS.Bounds.H, env)
+		srcWS.Tree = bsp.NewTree(newID)
+	} else {
+		_ = srcWS.Tree.Close(activePaneID)
+	}
+
+	srcWS.Layout(s.Cols, s.Rows)
+	s.syncPaneSizes(srcWS)
+
+	// Attach to target workspace
+	tgtWS, tgtExists := s.Workspaces[targetWS]
+	if !tgtExists {
+		tgtWS = NewWorkspace(targetWS, fmt.Sprintf("ws-%d", targetWS), activePaneID)
+		tgtWS.Layout(s.Cols, s.Rows)
+		s.Workspaces[targetWS] = tgtWS
+	} else {
+		_, _ = tgtWS.Tree.InsertPane(activePaneID)
+		tgtWS.SetActivePane(activePaneID)
+		tgtWS.Layout(s.Cols, s.Rows)
+	}
+	s.syncPaneSizes(tgtWS)
+
+	s.ActiveWS = targetWS
+	go s.NotifyState()
+	return nil
+}
+
 // SwitchWorkspace switches to workspace num (1..9), creating it if necessary.
 func (s *Session) SwitchWorkspace(num int) {
 	s.mu.Lock()

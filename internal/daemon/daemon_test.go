@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SujanPoudel1080/dajimux/internal/bsp"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
 )
 
@@ -138,5 +139,50 @@ func TestDaemonLifecycleAndSession(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("test-session not found in list response")
+	}
+}
+
+func TestSessionSwapAndMove(t *testing.T) {
+	s, err := NewSession("swap-test", 100, 40, nil)
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	// Split horizontally to get a second pane
+	p2, err := s.SplitActive(bsp.SplitHorizontal)
+	if err != nil || p2 == nil {
+		t.Fatalf("failed to split: %v", err)
+	}
+
+	ws := s.Workspaces[1]
+	p2ID := p2.ID
+
+	// Active should be p2
+	if ws.ActivePaneID() != p2ID {
+		t.Errorf("expected active pane %s, got %s", p2ID, ws.ActivePaneID())
+	}
+
+	// Swap with next
+	if err := s.SwapActiveWithNext(); err != nil {
+		t.Fatalf("SwapActiveWithNext failed: %v", err)
+	}
+
+	// Move active pane to Workspace 2
+	if err := s.MoveActiveToWorkspace(2); err != nil {
+		t.Fatalf("MoveActiveToWorkspace failed: %v", err)
+	}
+
+	if s.ActiveWS != 2 {
+		t.Errorf("expected active workspace 2, got %d", s.ActiveWS)
+	}
+
+	ws2 := s.Workspaces[2]
+	if ws2 == nil || ws2.ActivePaneID() != p2ID {
+		t.Errorf("expected workspace 2 to contain pane %s", p2ID)
+	}
+
+	// Workspace 1 should still exist and have a valid active pane
+	if ws1 := s.Workspaces[1]; ws1 == nil || ws1.ActivePaneID() == "" {
+		t.Errorf("expected workspace 1 to still have a valid pane")
 	}
 }

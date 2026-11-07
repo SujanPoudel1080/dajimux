@@ -72,6 +72,11 @@ dajimux list
 # Launch or attach to a named session
 dajimux attach my-project
 
+# Initialize or view configuration
+dajimux config init          # Generates ~/.config/dajimux/config.yaml
+dajimux config path          # Prints path to config file
+dajimux config show          # Shows active configuration
+
 # Stop the background daemon and all running sessions
 dajimux stop
 
@@ -98,8 +103,11 @@ dajimux peer connect remote.devbox.internal:7474 --token "my-secret-key" main
 - **Double-Tap `Space`**: Switch from `INSERT` mode to `NORMAL` mode.
 - In `NORMAL` mode:
   - `h` / `j` / `k` / `l` : Focus left / down / up / right pane
+  - `w` : Swap active pane with next pane in tree order
+  - `H` / `J` / `K` / `L` : Swap active pane with spatial neighbor (left / down / up / right)
   - `s` : Split pane horizontally
   - `v` : Split pane vertically
+  - `m <1-9>` : Move active pane to workspace 1..9
   - `x` : Close active pane
   - `z` : Zoom / toggle monocle (maximize pane)
   - `d` : Detach from session (leaves daemon running in background)
@@ -120,6 +128,34 @@ dajimux peer connect remote.devbox.internal:7474 --token "my-secret-key" main
   - `g` / `G` : Jump to top / bottom
   - `y` : Yank visible text to system clipboard via OSC 52
   - `q` / `Esc` / `Enter` : Exit scrollback mode
+
+## Configuration
+
+Customize keybindings, modal switching, and colors via `~/.config/dajimux/config.yaml`:
+
+```bash
+# Generate starter configuration
+dajimux config init
+```
+
+```yaml
+general:
+  default_shell: "$SHELL"
+  scrollback_lines: 5000
+
+input:
+  prefix_mode: "modal"         # "modal" (Space+Space)
+  modal_double_tap_ms: 280     # Double-tap threshold in ms
+  custom_leader: " "
+
+theme:
+  border_active: "cyan"        # cyan, blue, green, yellow, red, magenta, white
+  border_inactive: "gray"      # gray, darkgray, white
+  status_bar_bg: "darkgray"    # darkgray, black, gray, navy, blue
+  status_bar_fg: "white"
+  palette_bg: "darkgray"
+  palette_selected_bg: "gray"
+```
 
 ## Architecture
 

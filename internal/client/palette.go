@@ -28,6 +28,11 @@ func PaletteItemsForWorkspaces(totalWS int) []PaletteItem {
 	items := []PaletteItem{
 		{ID: "split_v", Title: "Split Vertical", Description: "Split active pane vertically (left/right)", Action: ActionSplitVertical},
 		{ID: "split_h", Title: "Split Horizontal", Description: "Split active pane horizontally (top/bottom)", Action: ActionSplitHorizontal},
+		{ID: "swap_next", Title: "Swap with Next Pane", Description: "Swap position with next pane in workspace (w)", Action: ActionSwapNext},
+		{ID: "swap_left", Title: "Swap Pane Left", Description: "Exchange position with left neighbor (Shift+H)", Action: ActionSwapLeft},
+		{ID: "swap_down", Title: "Swap Pane Down", Description: "Exchange position with lower neighbor (Shift+J)", Action: ActionSwapDown},
+		{ID: "swap_up", Title: "Swap Pane Up", Description: "Exchange position with upper neighbor (Shift+K)", Action: ActionSwapUp},
+		{ID: "swap_right", Title: "Swap Pane Right", Description: "Exchange position with right neighbor (Shift+L)", Action: ActionSwapRight},
 		{ID: "close", Title: "Close Pane", Description: "Terminate process and close pane", Action: ActionClosePane},
 		{ID: "zoom", Title: "Toggle Monocle (Zoom)", Description: "Maximize or restore current pane", Action: ActionToggleMonocle},
 		{ID: "resize", Title: "Resize Mode", Description: "Fine-tune pane split ratios", Action: ActionModeChange},
@@ -45,6 +50,15 @@ func PaletteItemsForWorkspaces(totalWS int) []PaletteItem {
 			Title:       fmt.Sprintf("Go to Workspace %d", i),
 			Description: fmt.Sprintf("Switch to workspace %d", i),
 			Action:      ActionSwitchWorkspace,
+			Workspace:   i,
+		})
+	}
+	for i := 1; i <= maxWS; i++ {
+		items = append(items, PaletteItem{
+			ID:          fmt.Sprintf("move_ws%d", i),
+			Title:       fmt.Sprintf("Move Pane to Workspace %d", i),
+			Description: fmt.Sprintf("Move active pane to workspace %d (m %d)", i, i),
+			Action:      ActionMoveToWorkspace,
 			Workspace:   i,
 		})
 	}
