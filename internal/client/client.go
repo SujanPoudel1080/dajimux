@@ -11,8 +11,10 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
+	"github.com/SujanPoudel1080/dajimux/internal/config"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
 )
 
@@ -21,6 +23,7 @@ type Client struct {
 	mu              sync.Mutex
 	SocketPath      string
 	SessionName     string
+	Config          *config.Config
 	conn            net.Conn
 	inputHandler    *InputHandler
 	palette         *Palette
@@ -41,13 +44,28 @@ type Client struct {
 
 // NewClient initializes a client for the target session.
 func NewClient(socketPath, sessionName string) *Client {
+	return NewClientWithConfig(socketPath, sessionName, config.DefaultConfig())
+}
+
+// NewClientWithConfig initializes a client with the provided user configuration.
+func NewClientWithConfig(socketPath, sessionName string, cfg *config.Config) *Client {
 	if sessionName == "" {
 		sessionName = "main"
 	}
+	if cfg == nil {
+		cfg = config.DefaultConfig()
+	}
+
+	handler := NewInputHandler()
+	if cfg.Input.ModalDoubleTapMs > 0 {
+		handler.SetDoubleTapThreshold(time.Duration(cfg.Input.ModalDoubleTapMs) * time.Millisecond)
+	}
+
 	return &Client{
 		SocketPath:   socketPath,
 		SessionName:  sessionName,
-		inputHandler: NewInputHandler(),
+		Config:       cfg,
+		inputHandler: handler,
 		palette:      NewPalette(),
 	}
 }
@@ -251,6 +269,22 @@ func (c *Client) readStdinLoop() error {
 		case ActionNavRight:
 			c.sendAction("nav_right", nil)
 
+		case ActionSwapNext:
+			c.sendAction("swap_next", nil)
+		case ActionSwapLeft:
+			c.sendAction("swap_left", nil)
+		case ActionSwapDown:
+			c.sendAction("swap_down", nil)
+		case ActionSwapUp:
+			c.sendAction("swap_up", nil)
+		case ActionSwapRight:
+			c.sendAction("swap_right", nil)
+
+		case ActionMoveToWorkspace:
+			c.sendAction("move_pane_ws", map[string]string{
+				"workspace": fmt.Sprintf("%d", res.WorkspaceNum),
+			})
+
 		case ActionSplitHorizontal:
 			c.sendAction("split_h", nil)
 		case ActionSplitVertical:
@@ -444,6 +478,20 @@ func (c *Client) executePaletteItem(item PaletteItem) {
 		c.sendAction("split_v", nil)
 	case ActionSplitHorizontal:
 		c.sendAction("split_h", nil)
+	case ActionSwapNext:
+		c.sendAction("swap_next", nil)
+	case ActionSwapLeft:
+		c.sendAction("swap_left", nil)
+	case ActionSwapDown:
+		c.sendAction("swap_down", nil)
+	case ActionSwapUp:
+		c.sendAction("swap_up", nil)
+	case ActionSwapRight:
+		c.sendAction("swap_right", nil)
+	case ActionMoveToWorkspace:
+		c.sendAction("move_pane_ws", map[string]string{
+			"workspace": fmt.Sprintf("%d", item.Workspace),
+		})
 	case ActionClosePane:
 		c.sendAction("close_pane", nil)
 	case ActionToggleMonocle:
@@ -497,7 +545,28 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 
 	// 1. Draw Top Header (Workspaces & Mode)
 	b.WriteString("\033[1;1H") // Move to row 1, col 1
-	b.WriteString("\033[48;5;236m\033[38;5;255m") // Dark gray bg, white fg
+
+	headerBg := "\033[48;5;236m"
+	headerFg := "\033[38;5;255m"
+	activeBorder := ""
+	inactiveBorder := ""
+	footerBg := "\033[48;5;236m"
+	footerFg := "\033[38;5;250m"
+
+	if c.Config != nil {
+		if c.Config.Theme.StatusBarBg != "" {
+			headerBg = c.Config.Theme.StatusBarBg
+			footerBg = c.Config.Theme.StatusBarBg
+		}
+		if c.Config.Theme.StatusBarFg != "" {
+			footerFg = c.Config.Theme.StatusBarFg
+		}
+		activeBorder = c.Config.Theme.BorderActive
+		inactiveBorder = c.Config.Theme.BorderInactive
+	}
+
+	b.WriteString(headerBg)
+	b.WriteString(headerFg)
 
 	// Mode badge color
 	modeColor := "\033[48;5;28m\033[38;5;255m" // Green for Insert
@@ -506,13 +575,13 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	} else if state.Mode == protocol.ModeResize {
 		modeColor = "\033[48;5;160m\033[38;5;255m" // Red for Resize
 	}
-	b.WriteString(fmt.Sprintf("%s %s \033[48;5;236m\033[38;5;255m", modeColor, state.Mode))
+	b.WriteString(fmt.Sprintf("%s %s %s%s", modeColor, state.Mode, headerBg, headerFg))
 
 	// Workspaces
 	b.WriteString(fmt.Sprintf(" [dajimux:%s] ", state.SessionName))
 	for i := 1; i <= 9; i++ {
 		if i == state.ActiveWorkspace {
-			b.WriteString(fmt.Sprintf("\033[48;5;240m\033[1m %d* \033[22m\033[48;5;236m", i))
+			b.WriteString(fmt.Sprintf("\033[48;5;240m\033[1m %d* \033[22m%s", i, headerBg))
 		} else if i <= state.TotalWorkspaces {
 			b.WriteString(fmt.Sprintf(" %d ", i))
 		}
@@ -526,11 +595,12 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	b.WriteString("\033[0m")
 
 	// 2. Draw Borders and Pane Headers
-	b.WriteString(RenderBorders(state.Panes, cols, rows, state.IsMonocle))
+	b.WriteString(RenderBordersWithTheme(state.Panes, cols, rows, state.IsMonocle, activeBorder, inactiveBorder))
 
 	// 3. Draw Bottom Status Bar (Agent Telemetry & Shortcuts)
 	b.WriteString(fmt.Sprintf("\033[%d;1H", rows)) // Move to last row
-	b.WriteString("\033[48;5;236m\033[38;5;250m")
+	b.WriteString(footerBg)
+	b.WriteString(footerFg)
 
 	// Look for active pane's agent telemetry
 	var agentTelemetry string
@@ -541,7 +611,7 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 		}
 	}
 
-	footerText := fmt.Sprintf(" Space+Space: Normal Mode | h/j/k/l: Nav | s/v: Split | x: Close | 1-9: WS%s", agentTelemetry)
+	footerText := fmt.Sprintf(" Space+Space: Normal | h/j/k/l: Nav | w: Swap | s/v: Split | m<1-9>: Move WS | x: Close%s", agentTelemetry)
 	b.WriteString(footerText)
 	if cols > len(footerText) {
 		b.WriteString(strings.Repeat(" ", cols-len(footerText)))

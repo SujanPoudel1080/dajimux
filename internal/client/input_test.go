@@ -118,3 +118,34 @@ func TestInputHandlerPaletteDismissAndExecute(t *testing.T) {
 		t.Fatalf("expected mode NORMAL after Enter execution, got %s", handler.CurrentMode)
 	}
 }
+
+func TestInputHandlerSwapAndMove(t *testing.T) {
+	handler := NewInputHandler()
+	handler.CurrentMode = protocol.ModeNormal
+
+	// Test 'w' for SwapNext
+	resW := handler.HandleKey([]byte{'w'})
+	if resW.Action != ActionSwapNext {
+		t.Fatalf("expected ActionSwapNext on 'w', got %s", resW.Action)
+	}
+
+	// Test 'H' for SwapLeft
+	resH := handler.HandleKey([]byte{'H'})
+	if resH.Action != ActionSwapLeft {
+		t.Fatalf("expected ActionSwapLeft on 'H', got %s", resH.Action)
+	}
+
+	// Test 'm' then '3' for MoveToWorkspace 3
+	resM := handler.HandleKey([]byte{'m'})
+	if resM.Action != ActionNone || !handler.pendingMove {
+		t.Fatalf("expected pendingMove to be true on 'm'")
+	}
+
+	res3 := handler.HandleKey([]byte{'3'})
+	if res3.Action != ActionMoveToWorkspace || res3.WorkspaceNum != 3 {
+		t.Fatalf("expected ActionMoveToWorkspace 3, got %+v", res3)
+	}
+	if handler.pendingMove {
+		t.Fatalf("expected pendingMove to be reset")
+	}
+}

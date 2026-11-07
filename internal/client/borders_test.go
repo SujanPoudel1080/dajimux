@@ -38,4 +38,15 @@ func TestRenderBorders(t *testing.T) {
 	if resMonocle != "" {
 		t.Errorf("expected empty string in monocle zoom mode")
 	}
+
+	// Custom theme colors
+	customActive := "\033[38;5;46m" // Green
+	customInactive := "\033[38;5;238m"
+	resThemed := RenderBordersWithTheme(two, 80, 24, false, customActive, customInactive)
+	if !strings.Contains(resThemed, customActive) {
+		t.Errorf("expected custom active color in border output")
+	}
+	if !strings.Contains(resThemed, customInactive) {
+		t.Errorf("expected custom inactive color in border output")
+	}
 }

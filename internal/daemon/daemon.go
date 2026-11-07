@@ -387,6 +387,21 @@ func (d *Daemon) handleAction(s *Session, action protocol.ActionPayload) {
 		s.Navigate(bsp.NavUp)
 	case "nav_right":
 		s.Navigate(bsp.NavRight)
+	case "swap_next":
+		_ = s.SwapActiveWithNext()
+	case "swap_left":
+		_ = s.SwapActive(bsp.NavLeft)
+	case "swap_down":
+		_ = s.SwapActive(bsp.NavDown)
+	case "swap_up":
+		_ = s.SwapActive(bsp.NavUp)
+	case "swap_right":
+		_ = s.SwapActive(bsp.NavRight)
+	case "move_pane_ws":
+		var wsNum int
+		if fmt.Sscanf(action.Params["workspace"], "%d", &wsNum); wsNum > 0 {
+			_ = s.MoveActiveToWorkspace(wsNum)
+		}
 	case "toggle_monocle":
 		s.ToggleMonocle()
 	case "switch_workspace":

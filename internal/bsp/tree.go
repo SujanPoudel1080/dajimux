@@ -400,6 +400,62 @@ func (t *Tree) Swap(paneID1, paneID2 string) error {
 	return nil
 }
 
+// SwapNext exchanges the active pane with the next leaf pane in tree order.
+func (t *Tree) SwapNext() error {
+	leaves := t.ListLeafPanes()
+	if len(leaves) < 2 {
+		return errors.New("cannot swap: less than 2 panes")
+	}
+	idx := -1
+	for i, id := range leaves {
+		if id == t.ActivePaneID {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		idx = 0
+	}
+	nextIdx := (idx + 1) % len(leaves)
+	targetPaneID := leaves[nextIdx]
+	return t.Swap(t.ActivePaneID, targetPaneID)
+}
+
+// SwapDirection exchanges the active pane with its spatial neighbor in dir.
+func (t *Tree) SwapDirection(dir NavDirection) error {
+	neighbor := t.FindNeighbor(t.ActivePaneID, dir)
+	if neighbor == "" || neighbor == t.ActivePaneID {
+		return errors.New("no neighbor in that direction")
+	}
+	return t.Swap(t.ActivePaneID, neighbor)
+}
+
+// InsertRoot sets the given pane as the root node of an empty tree.
+func (t *Tree) InsertRoot(paneID string) {
+	t.Root = &Node{
+		ID:     t.nextNodeID(),
+		PaneID: paneID,
+		Ratio:  0.5,
+	}
+	t.ActivePaneID = paneID
+}
+
+// InsertPane adds a pane into the tree, attaching to ActivePaneID or Root.
+func (t *Tree) InsertPane(newPaneID string) (*Node, error) {
+	if t.Root == nil {
+		t.InsertRoot(newPaneID)
+		return t.Root, nil
+	}
+	targetID := t.ActivePaneID
+	if t.FindNode(targetID) == nil {
+		leaves := t.ListLeafPanes()
+		if len(leaves) > 0 {
+			targetID = leaves[0]
+		}
+	}
+	return t.SplitAuto(targetID, newPaneID)
+}
+
 // ToggleMonocle maximizes the pane or restores normal layout.
 func (t *Tree) ToggleMonocle(paneID string) {
 	if t.MonoclePaneID == paneID {

@@ -97,3 +97,51 @@ func TestBSPBasicOperations(t *testing.T) {
 		t.Fatalf("expected 2 leaves after closing, got %d", len(leaves))
 	}
 }
+
+func TestTreeSwapNextAndDirection(t *testing.T) {
+	tree := NewTree("p1")
+	_, err := tree.Split("p1", "p2", SplitVertical, 0.5)
+	if err != nil {
+		t.Fatalf("split error: %v", err)
+	}
+	tree.ComputeLayout(Rect{X: 0, Y: 0, W: 100, H: 40}, 0)
+	tree.ActivePaneID = "p1"
+
+	// SwapNext should swap p1 with p2
+	if err := tree.SwapNext(); err != nil {
+		t.Fatalf("SwapNext error: %v", err)
+	}
+	nodeP1 := tree.FindNode("p1")
+	nodeP2 := tree.FindNode("p2")
+	if nodeP1.Rect.X <= nodeP2.Rect.X {
+		t.Fatalf("expected p1 to be swapped to the right of p2")
+	}
+
+	// SwapDirection left should swap p1 back with p2
+	if err := tree.SwapDirection(NavLeft); err != nil {
+		t.Fatalf("SwapDirection error: %v", err)
+	}
+	nodeP1After := tree.FindNode("p1")
+	nodeP2After := tree.FindNode("p2")
+	if nodeP1After.Rect.X >= nodeP2After.Rect.X {
+		t.Fatalf("expected p1 to be swapped back to the left of p2")
+	}
+}
+
+func TestTreeInsertPaneAndRoot(t *testing.T) {
+	tree := &Tree{}
+	tree.InsertRoot("root-1")
+	if tree.Root == nil || tree.Root.PaneID != "root-1" {
+		t.Fatalf("InsertRoot failed")
+	}
+
+	node, err := tree.InsertPane("child-2")
+	if err != nil || node == nil {
+		t.Fatalf("InsertPane failed: %v", err)
+	}
+
+	leaves := tree.ListLeafPanes()
+	if len(leaves) != 2 {
+		t.Fatalf("expected 2 leaves, got %d", len(leaves))
+	}
+}
