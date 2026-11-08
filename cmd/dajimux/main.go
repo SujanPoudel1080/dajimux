@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/SujanPoudel1080/dajimux/internal/client"
+	"github.com/SujanPoudel1080/dajimux/internal/completion"
 	"github.com/SujanPoudel1080/dajimux/internal/config"
 	"github.com/SujanPoudel1080/dajimux/internal/daemon"
+	"github.com/SujanPoudel1080/dajimux/internal/man"
 	"github.com/SujanPoudel1080/dajimux/internal/mcp"
 	"github.com/SujanPoudel1080/dajimux/internal/peer"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
@@ -82,6 +84,12 @@ func main() {
 	case "mcp":
 		runMCPCmd(os.Args[2:])
 
+	case "completion":
+		runCompletionCmd(os.Args[2:])
+
+	case "man":
+		runManCmd(os.Args[2:])
+
 	case "help", "--help", "-h":
 		printHelp()
 
@@ -108,6 +116,8 @@ Usage:
   dajimux service [action]     Manage daemon service (install, status, uninstall)
   dajimux mcp [flags]          Run Model Context Protocol (MCP) server over stdio
   dajimux config [init|path]   Manage user configuration file
+  dajimux completion [shell]   Generate shell completion (bash, zsh, fish)
+  dajimux man [--raw]          Display manual page
   dajimux agent status [flags] Report agent state & telemetry badge
   dajimux msg send [flags]     Send message to another pane or channel
   dajimux pane capture [flags] Capture lines from a sibling pane
@@ -651,4 +661,28 @@ func runStopServerCmd() {
 	_, _ = reader.Read()
 
 	fmt.Println("dajimux daemon stopped.")
+}
+
+func runCompletionCmd(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: dajimux completion <bash|zsh|fish>\n")
+		os.Exit(1)
+	}
+	script, err := completion.Generate(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Print(script)
+}
+
+func runManCmd(args []string) {
+	raw := false
+	if len(args) > 0 && (args[0] == "--raw" || args[0] == "-r") {
+		raw = true
+	}
+	if err := man.View(version, raw, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "Error displaying man page: %v\n", err)
+		os.Exit(1)
+	}
 }

@@ -32,6 +32,7 @@ archives:
     files:
       - README.md
       - LICENSE
+      - man/dajimux.1
 
 nfpms:
   - id: packages
@@ -62,6 +63,8 @@ brews:
       system "#{bin}/dajimux", "version"
     install: |
       bin.install "dajimux"
+      man1.install "man/dajimux.1"
+      generate_completions_from_executable(bin/"dajimux", "completion")
 
 checksum:
   name_template: "checksums.txt"
