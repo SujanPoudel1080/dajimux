@@ -10,6 +10,14 @@ echo "Building dajimux v${VERSION} (commit: ${COMMIT}, date: ${BUILD_DATE})..."
 rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}"
 
+# Pre-generate shell completions
+COMPLETIONS_DIR="${DIST_DIR}/completions"
+mkdir -p "${COMPLETIONS_DIR}"
+echo "Generating shell completion assets..."
+go run ./cmd/dajimux completion bash > "${COMPLETIONS_DIR}/dajimux.bash"
+go run ./cmd/dajimux completion zsh > "${COMPLETIONS_DIR}/_dajimux"
+go run ./cmd/dajimux completion fish > "${COMPLETIONS_DIR}/dajimux.fish"
+
 TARGETS=(
     "darwin arm64"
     "darwin amd64"
@@ -29,12 +37,15 @@ for TARGET in "${TARGETS[@]}"; do
     
     # Archive
     ARCHIVE_DIR="${DIST_DIR}/dajimux_${VERSION}_${OS}_${ARCH}"
-    mkdir -p "${ARCHIVE_DIR}"
+    mkdir -p "${ARCHIVE_DIR}/completions"
+    mkdir -p "${ARCHIVE_DIR}/man"
     cp "${OUTPUT_BIN}" "${ARCHIVE_DIR}/dajimux"
     cp README.md LICENSE "${ARCHIVE_DIR}/"
+    cp man/dajimux.1 "${ARCHIVE_DIR}/man/"
+    cp "${COMPLETIONS_DIR}/"* "${ARCHIVE_DIR}/completions/"
     
     TARBALL="${DIST_DIR}/dajimux_${VERSION}_${OS}_${ARCH}.tar.gz"
-    tar -czf "${TARBALL}" -C "${ARCHIVE_DIR}" dajimux README.md LICENSE
+    tar -czf "${TARBALL}" -C "${ARCHIVE_DIR}" dajimux README.md LICENSE man completions
     rm -rf "${ARCHIVE_DIR}" "${OUTPUT_BIN}"
     echo "     Created ${TARBALL}"
 done

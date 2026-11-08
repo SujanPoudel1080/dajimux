@@ -1,0 +1,38 @@
+# Maintainer: Sujan Poudel <sujanpoudel1080@gmail.com>
+pkgname=dajimux
+pkgver=0.1.5
+pkgrel=1
+pkgdesc="Modern terminal multiplexer & agent mesh with Vim-modal ergonomics and BSP tiling"
+arch=('x86_64' 'aarch64')
+url="https://github.com/SujanPoudel1080/dajimux"
+license=('MIT')
+depends=('glibc')
+makedepends=('go')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    export CGO_ENABLED=0
+    export GOFLAGS="-trimpath -mod=readonly -modcacherw"
+    go build -ldflags "-s -w -X main.version=$pkgver -X main.commit=release" -o dajimux ./cmd/dajimux
+    ./dajimux completion bash > dajimux.bash
+    ./dajimux completion zsh > _dajimux
+    ./dajimux completion fish > dajimux.fish
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    go test ./...
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 dajimux "$pkgdir/usr/bin/dajimux"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 man/dajimux.1 "$pkgdir/usr/share/man/man1/dajimux.1"
+    install -Dm644 dajimux.bash "$pkgdir/usr/share/bash-completion/completions/dajimux"
+    install -Dm644 _dajimux "$pkgdir/usr/share/zsh/site-functions/_dajimux"
+    install -Dm644 dajimux.fish "$pkgdir/usr/share/fish/vendor_completions.d/dajimux.fish"
+}

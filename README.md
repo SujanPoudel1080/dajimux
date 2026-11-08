@@ -54,6 +54,13 @@ sudo dpkg -i dajimux_*_linux_amd64.deb
 sudo rpm -i dajimux_*_linux_amd64.rpm
 ```
 
+### Arch Linux (AUR)
+
+```bash
+# Using yay or paru
+yay -S dajimux
+```
+
 ### Go Install
 
 ```bash
@@ -84,6 +91,15 @@ dajimux service uninstall    # Unregisters and disables daemon service
 dajimux config init          # Generates ~/.config/dajimux/config.yaml
 dajimux config path          # Prints path to config file
 dajimux config show          # Shows active configuration
+
+# Generate shell auto-completions
+dajimux completion bash > ~/.bash_completion.d/dajimux
+dajimux completion zsh > ~/.zfunc/_dajimux
+dajimux completion fish > ~/.config/fish/completions/dajimux.fish
+
+# View manual page
+dajimux man                  # Opens interactive manual page
+dajimux man --raw            # Outputs raw roff source
 
 # Stop the background daemon and all running sessions
 dajimux stop
@@ -204,15 +220,24 @@ theme:
 
 ```
 dajimux/
-├── cmd/dajimux/          # CLI entry point (Cobra)
+├── cmd/dajimux/          # CLI entry point
 ├── internal/
+│   ├── agent/            # Agent Mesh broker & client hooks
 │   ├── bsp/              # Binary Space Partitioning window tree
 │   ├── client/           # Terminal client, raw mode, modal input handler
+│   ├── completion/       # Bash, Zsh, and Fish shell completion generators
+│   ├── config/           # User YAML configuration loader & validator
 │   ├── daemon/           # Daemon server, session & workspace manager
-│   ├── pty/              # POSIX pseudoterminal allocation & signals
+│   ├── kitty/            # Kitty graphics protocol translation & clipping
+│   ├── man/              # Troff manual page generator & viewer
+│   ├── mcp/              # Model Context Protocol (MCP) server & daemon bridge
+│   ├── peer/             # Cross-machine peer TCP listener and client
 │   ├── protocol/         # IPC message framing & types
-│   ├── agent/            # Agent Mesh broker & client hooks
-│   └── kitty/            # Kitty graphics protocol translation & clipping
+│   ├── pty/              # POSIX pseudoterminal allocation & signals
+│   ├── service/          # System background services (macOS launchd & Linux systemd)
+│   └── state/            # Session tree persistence & atomic state serialization
+├── man/                  # Prebuilt man1 documentation
+└── packaging/            # Distribution packaging (Arch PKGBUILD, etc.)
 ```
 
 ## License
