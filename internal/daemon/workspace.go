@@ -63,3 +63,22 @@ func (w *Workspace) SetActivePane(paneID string) {
 	defer w.mu.Unlock()
 	w.Tree.ActivePaneID = paneID
 }
+
+// Rename updates the display name of this workspace.
+func (w *Workspace) Rename(newName string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if newName != "" {
+		w.Name = newName
+	}
+}
+
+// LayoutType returns the current layout preset of this workspace.
+func (w *Workspace) LayoutType() bsp.LayoutType {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.Tree == nil {
+		return bsp.LayoutBSP
+	}
+	return w.Tree.LayoutType
+}

@@ -28,6 +28,8 @@ type Daemon struct {
 type clientEntry struct {
 	session *Session
 	writer  *protocol.EnvelopeWriter
+	cols    int
+	rows    int
 }
 
 // DefaultSocketPath returns the standard socket location for the current user.
@@ -155,13 +157,16 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 				if err == nil {
 					attachedSession = session
 					d.mu.Lock()
-					d.clients[conn] = &clientEntry{session: session, writer: writer}
+					d.clients[conn] = &clientEntry{
+						session: session,
+						writer:  writer,
+						cols:    p.Cols,
+						rows:    p.Rows,
+					}
 					d.mu.Unlock()
 
-					// Resize session to match connected client terminal dimensions
-					if p.Cols > 0 && p.Rows > 0 {
-						session.ResizeTerminal(p.Cols, p.Rows)
-					}
+					// Clamp session dimensions to minimum across all attached clients
+					d.updateSessionDimensions(session)
 
 					// Send current layout state to newly attached client
 					state := session.GetLayoutState()
@@ -199,7 +204,13 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 			if attachedSession != nil {
 				var p protocol.ResizePayload
 				if err := json.Unmarshal(env.Payload, &p); err == nil {
-					attachedSession.ResizeTerminal(p.Cols, p.Rows)
+					d.mu.Lock()
+					if entry, ok := d.clients[conn]; ok {
+						entry.cols = p.Cols
+						entry.rows = p.Rows
+					}
+					d.mu.Unlock()
+					d.updateSessionDimensions(attachedSession)
 				}
 			}
 
@@ -418,6 +429,10 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 	d.mu.Lock()
 	delete(d.clients, conn)
 	d.mu.Unlock()
+
+	if attachedSession != nil {
+		d.updateSessionDimensions(attachedSession)
+	}
 }
 
 func (d *Daemon) getSessionForRequest(sessionID string) *Session {
@@ -544,8 +559,49 @@ func (d *Daemon) handleAction(s *Session, action protocol.ActionPayload) {
 		if target != "" {
 			s.SetMode(target)
 		}
+	case "cycle_layout":
+		s.CycleLayout()
+	case "set_layout":
+		lt := bsp.LayoutType(action.Params["type"])
+		if lt != "" {
+			s.SetLayout(lt)
+		}
+	case "rename_workspace":
+		name := action.Params["name"]
+		if name != "" {
+			wsNum := s.ActiveWS
+			if action.Params["workspace"] != "" {
+				_, _ = fmt.Sscanf(action.Params["workspace"], "%d", &wsNum)
+			}
+			s.RenameWorkspace(wsNum, name)
+		}
 	case "redraw":
 		s.NotifyState()
+	}
+}
+
+func (d *Daemon) updateSessionDimensions(s *Session) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	minCols := 0
+	minRows := 0
+	count := 0
+
+	for _, entry := range d.clients {
+		if entry.session == s && entry.cols > 0 && entry.rows > 0 {
+			if count == 0 || entry.cols < minCols {
+				minCols = entry.cols
+			}
+			if count == 0 || entry.rows < minRows {
+				minRows = entry.rows
+			}
+			count++
+		}
+	}
+
+	if count > 0 && minCols > 0 && minRows > 0 {
+		s.ResizeTerminal(minCols, minRows)
 	}
 }
 

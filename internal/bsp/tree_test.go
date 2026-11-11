@@ -145,3 +145,61 @@ func TestTreeInsertPaneAndRoot(t *testing.T) {
 		t.Fatalf("expected 2 leaves, got %d", len(leaves))
 	}
 }
+
+func TestLayoutPresets(t *testing.T) {
+	tree := NewTree("p1")
+	_, _ = tree.Split("p1", "p2", SplitVertical, 0.5)
+	_, _ = tree.Split("p2", "p3", SplitHorizontal, 0.5)
+
+	// Test default layout is BSP
+	if tree.LayoutType != LayoutBSP {
+		t.Fatalf("expected default layout BSP, got %s", tree.LayoutType)
+	}
+
+	bounds := Rect{X: 0, Y: 0, W: 100, H: 40}
+
+	// 1. Cycle to Master-Stack
+	next := tree.CycleLayout()
+	if next != LayoutMasterStack || tree.LayoutType != LayoutMasterStack {
+		t.Fatalf("expected LayoutMasterStack, got %s", next)
+	}
+	tree.ComputeLayout(bounds, 1)
+
+	n1 := tree.FindNode("p1")
+	n2 := tree.FindNode("p2")
+	n3 := tree.FindNode("p3")
+
+	// In Master-Stack: p1 should be on left (master pane, width ≈ 60% of 100)
+	if n1.Rect.X != 0 || n1.Rect.W != 59 || n1.Rect.H != 40 {
+		t.Errorf("unexpected master pane rect: %+v", n1.Rect)
+	}
+	// p2 and p3 should be stacked vertically on right
+	if n2.Rect.X <= n1.Rect.W || n3.Rect.X <= n1.Rect.W {
+		t.Errorf("stack panes should be to the right of master: p2=%+v, p3=%+v", n2.Rect, n3.Rect)
+	}
+	if n3.Rect.Y <= n2.Rect.Y {
+		t.Errorf("p3 should be stacked below p2: p2.Y=%d, p3.Y=%d", n2.Rect.Y, n3.Rect.Y)
+	}
+
+	// 2. Cycle to Equal Grid
+	next = tree.CycleLayout()
+	if next != LayoutEqualGrid || tree.LayoutType != LayoutEqualGrid {
+		t.Fatalf("expected LayoutEqualGrid, got %s", next)
+	}
+	tree.ComputeLayout(bounds, 1)
+
+	// In 3-pane Equal Grid, cols=2, rows=2
+	// Each pane should have non-zero geometry within bounds
+	for _, pid := range []string{"p1", "p2", "p3"} {
+		node := tree.FindNode(pid)
+		if node.Rect.W < 10 || node.Rect.H < 10 {
+			t.Errorf("pane %s has invalid grid dimensions: %+v", pid, node.Rect)
+		}
+	}
+
+	// 3. Cycle back to BSP
+	next = tree.CycleLayout()
+	if next != LayoutBSP {
+		t.Fatalf("expected cycle back to LayoutBSP, got %s", next)
+	}
+}

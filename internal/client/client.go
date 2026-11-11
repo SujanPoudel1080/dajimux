@@ -204,6 +204,8 @@ func (c *Client) readDaemonLoop() {
 				c.mu.Unlock()
 				c.renderScrollback()
 			}
+		case protocol.MsgBell:
+			os.Stdout.Write([]byte("\a"))
 		}
 	}
 }
@@ -307,6 +309,8 @@ func (c *Client) readStdinLoop() error {
 			c.sendAction("split_h", nil)
 		case ActionSplitVertical:
 			c.sendAction("split_v", nil)
+		case ActionCycleLayout:
+			c.sendAction("cycle_layout", nil)
 		case ActionClosePane:
 			c.sendAction("close_pane", nil)
 		case ActionToggleMonocle:
@@ -513,6 +517,11 @@ func (c *Client) findWorkspaceFromHeaderClick(clickX int) int {
 	// Format: " MODE " + " [dajimux:SESSION] "
 	startCol := 1 + (len(mode) + 2) + (len(sessionName) + 12)
 
+	wsNames := make(map[int]string)
+	for _, ws := range state.Workspaces {
+		wsNames[ws.ID] = ws.Name
+	}
+
 	currCol := startCol
 	totalWS := state.TotalWorkspaces
 	if totalWS < 1 {
@@ -523,9 +532,17 @@ func (c *Client) findWorkspaceFromHeaderClick(clickX int) int {
 	}
 
 	for i := 1; i <= 9; i++ {
-		width := 3 // " %d "
+		name := wsNames[i]
+		hasCustomName := name != "" && name != fmt.Sprintf("ws-%d", i) && (i != 1 || name != "main")
+
+		tabLabel := fmt.Sprintf("%d", i)
+		if hasCustomName {
+			tabLabel = fmt.Sprintf("%d:%s", i, name)
+		}
+
+		width := len(tabLabel) + 2 // " %s "
 		if i == state.ActiveWorkspace {
-			width = 4 // " %d* "
+			width = len(tabLabel) + 3 // " %s* "
 		}
 
 		if i <= totalWS || i == state.ActiveWorkspace {
@@ -654,6 +671,30 @@ func (c *Client) executePaletteItem(item PaletteItem) {
 		c.sendAction("move_pane_ws", map[string]string{
 			"workspace": fmt.Sprintf("%d", item.Workspace),
 		})
+	case ActionCycleLayout:
+		c.sendAction("cycle_layout", nil)
+	case ActionSetLayoutBSP:
+		c.sendAction("set_layout", map[string]string{"type": "bsp"})
+	case ActionSetLayoutMaster:
+		c.sendAction("set_layout", map[string]string{"type": "master_stack"})
+	case ActionSetLayoutGrid:
+		c.sendAction("set_layout", map[string]string{"type": "grid"})
+	case ActionRenameWorkspace:
+		query := strings.TrimSpace(c.palette.Query)
+		// Extract name if query starts with "rename" or has words
+		parts := strings.Fields(query)
+		name := ""
+		if len(parts) >= 2 && strings.EqualFold(parts[0], "rename") {
+			name = strings.Join(parts[1:], " ")
+		} else if len(parts) == 1 && !strings.EqualFold(parts[0], "rename") {
+			name = parts[0]
+		}
+		if name == "" {
+			name = fmt.Sprintf("work-%d", c.lastState.ActiveWorkspace)
+		}
+		c.sendAction("rename_workspace", map[string]string{
+			"name": name,
+		})
 	case ActionClosePane:
 		c.sendAction("close_pane", nil)
 	case ActionToggleMonocle:
@@ -737,22 +778,54 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	} else if state.Mode == protocol.ModeResize {
 		modeColor = "\033[48;5;160m\033[38;5;255m" // Red for Resize
 	}
-	b.WriteString(fmt.Sprintf("%s %s %s%s", modeColor, state.Mode, headerBg, headerFg))
-
 	// Workspaces
-	b.WriteString(fmt.Sprintf(" [dajimux:%s] ", state.SessionName))
+	wsNames := make(map[int]string)
+	for _, ws := range state.Workspaces {
+		wsNames[ws.ID] = ws.Name
+	}
+
+	headerPrefix := fmt.Sprintf("%s %s %s%s [dajimux:%s] ", modeColor, state.Mode, headerBg, headerFg, state.SessionName)
+	b.WriteString(headerPrefix)
+	printedHeaderLen := len(state.Mode) + 2 + len(state.SessionName) + 12
+
 	for i := 1; i <= 9; i++ {
+		name := wsNames[i]
+		hasCustomName := name != "" && name != fmt.Sprintf("ws-%d", i) && (i != 1 || name != "main")
+
+		tabLabel := fmt.Sprintf("%d", i)
+		if hasCustomName {
+			tabLabel = fmt.Sprintf("%d:%s", i, name)
+		}
+
 		if i == state.ActiveWorkspace {
-			b.WriteString(fmt.Sprintf("\033[48;5;240m\033[1m %d* \033[22m%s", i, headerBg))
+			seg := fmt.Sprintf(" %s* ", tabLabel)
+			b.WriteString(fmt.Sprintf("\033[48;5;240m\033[1m%s\033[22m%s", seg, headerBg))
+			printedHeaderLen += len(seg)
 		} else if i <= state.TotalWorkspaces {
-			b.WriteString(fmt.Sprintf(" %d ", i))
+			seg := fmt.Sprintf(" %s ", tabLabel)
+			b.WriteString(seg)
+			printedHeaderLen += len(seg)
 		}
 	}
 
-	// Pad header to end of line
-	headerLen := 30 + (state.TotalWorkspaces * 4)
-	if cols > headerLen {
-		b.WriteString(strings.Repeat(" ", cols-headerLen))
+	// Layout preset badge at far right
+	layoutStr := strings.ToUpper(state.LayoutType)
+	if layoutStr == "" || layoutStr == "BSP" {
+		layoutStr = "BSP"
+	} else if layoutStr == "MASTER_STACK" {
+		layoutStr = "MASTER"
+	} else if layoutStr == "GRID" {
+		layoutStr = "GRID"
+	}
+	layoutBadge := fmt.Sprintf(" <%s> ", layoutStr)
+
+	// Pad header and place layout indicator at far right
+	if cols > printedHeaderLen+len(layoutBadge) {
+		pad := cols - printedHeaderLen - len(layoutBadge)
+		b.WriteString(strings.Repeat(" ", pad))
+		b.WriteString("\033[1m\033[38;5;51m" + layoutBadge + "\033[0m" + headerBg + headerFg)
+	} else if cols > printedHeaderLen {
+		b.WriteString(strings.Repeat(" ", cols-printedHeaderLen))
 	}
 	b.WriteString("\033[0m")
 
@@ -773,7 +846,7 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 		}
 	}
 
-	footerText := fmt.Sprintf(" Space+Space: Normal | h/j/k/l: Nav | w: Swap | s/v: Split | m<1-9>: Move WS | x: Close%s", agentTelemetry)
+	footerText := fmt.Sprintf(" Space+Space: Normal | h/j/k/l: Nav | w: Swap | t: Layout | s/v: Split | m<1-9>: Move WS | x: Close%s", agentTelemetry)
 	b.WriteString(footerText)
 	if cols > len(footerText) {
 		b.WriteString(strings.Repeat(" ", cols-len(footerText)))

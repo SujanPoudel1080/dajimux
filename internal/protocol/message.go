@@ -99,15 +99,23 @@ type PaneInfo struct {
 	AgentBadge string `json:"agent_badge,omitempty"`
 }
 
+// WorkspaceMeta represents basic metadata for an active workspace.
+type WorkspaceMeta struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
 // LayoutStatePayload notifies the client of the current screen arrangement.
 type LayoutStatePayload struct {
-	SessionName      string     `json:"session_name"`
-	ActiveWorkspace  int        `json:"active_workspace"`
-	TotalWorkspaces  int        `json:"total_workspaces"`
-	ActivePaneID     string     `json:"active_pane_id"`
-	Mode             Mode       `json:"mode"`
-	Panes            []PaneInfo `json:"panes"`
-	IsMonocle        bool       `json:"is_monocle"`
+	SessionName     string          `json:"session_name"`
+	ActiveWorkspace int             `json:"active_workspace"`
+	TotalWorkspaces int             `json:"total_workspaces"`
+	Workspaces      []WorkspaceMeta `json:"workspaces,omitempty"`
+	LayoutType      string          `json:"layout_type,omitempty"`
+	ActivePaneID    string          `json:"active_pane_id"`
+	Mode            Mode            `json:"mode"`
+	Panes           []PaneInfo      `json:"panes"`
+	IsMonocle       bool            `json:"is_monocle"`
 }
 
 // FrameUpdatePayload transmits raw differential ANSI bytes to render on the client screen.

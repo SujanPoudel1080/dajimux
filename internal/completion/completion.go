@@ -35,7 +35,7 @@ _dajimux() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="attach list ls daemon stop kill-server restore service mcp config agent msg pane peer completion man version help"
+    local commands="attach list ls daemon stop kill-server restore service mcp config layout workspace agent msg pane peer completion man version help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
@@ -48,6 +48,16 @@ _dajimux() {
         attach|restore)
             local sessions=$(_dajimux_sessions)
             COMPREPLY=( $(compgen -W "${sessions}" -- "${cur}") )
+            ;;
+        layout)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "cycle bsp master grid" -- "${cur}") )
+            fi
+            ;;
+        workspace)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "rename switch" -- "${cur}") )
+            fi
             ;;
         service)
             if [[ $cword -eq 2 ]]; then
@@ -140,6 +150,8 @@ _dajimux() {
                 'service:Manage daemon background service'
                 'mcp:Run Model Context Protocol (MCP) server over stdio'
                 'config:Manage user configuration file'
+                'layout:Switch or cycle layout presets'
+                'workspace:Manage workspaces (rename, switch)'
                 'agent:Report agent state & telemetry badge'
                 'msg:Send message to another pane or channel'
                 'pane:Capture output lines from sibling pane'
@@ -173,6 +185,16 @@ _dajimux() {
                         'show:Display active loaded configuration'
                     )
                     _describe -t config_cmds 'config actions' config_cmds
+                    ;;
+                layout)
+                    local -a layout_cmds
+                    layout_cmds=('cycle:Cycle next layout preset' 'bsp:Default BSP layout' 'master:Master-Stack MonadTall layout' 'grid:Equal Grid layout')
+                    _describe -t layout_cmds 'layout presets' layout_cmds
+                    ;;
+                workspace)
+                    local -a ws_cmds
+                    ws_cmds=('rename:Rename active or target workspace' 'switch:Switch active workspace')
+                    _describe -t ws_cmds 'workspace actions' ws_cmds
                     ;;
                 completion)
                     local -a shells
@@ -233,6 +255,8 @@ complete -f -c dajimux -n '__fish_dajimux_needs_command' -a restore -d 'Restore 
 complete -f -c dajimux -n '__fish_dajimux_needs_command' -a service -d 'Manage background system service'
 complete -f -c dajimux -n '__fish_dajimux_needs_command' -a mcp -d 'Run Model Context Protocol server over stdio'
 complete -f -c dajimux -n '__fish_dajimux_needs_command' -a config -d 'Manage configuration file'
+complete -f -c dajimux -n '__fish_dajimux_needs_command' -a layout -d 'Switch or cycle layout presets'
+complete -f -c dajimux -n '__fish_dajimux_needs_command' -a workspace -d 'Manage workspaces (rename, switch)'
 complete -f -c dajimux -n '__fish_dajimux_needs_command' -a agent -d 'Report agent status badge'
 complete -f -c dajimux -n '__fish_dajimux_needs_command' -a pane -d 'Capture sibling pane lines'
 complete -f -c dajimux -n '__fish_dajimux_needs_command' -a msg -d 'Send agent message'

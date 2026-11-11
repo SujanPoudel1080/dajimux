@@ -349,3 +349,44 @@ func TestDaemonListPanesAndSpawnPane(t *testing.T) {
 		t.Errorf("expected spawn success, got %+v", spawnRes)
 	}
 }
+
+func TestSessionLayoutCycleAndWorkspaceRename(t *testing.T) {
+	sess, err := NewSession("test-layout-ws", 100, 30, nil)
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	// Initial layout is BSP
+	state := sess.GetLayoutState()
+	if state.LayoutType != "bsp" {
+		t.Errorf("expected layout bsp, got %s", state.LayoutType)
+	}
+
+	// Cycle layout -> master_stack
+	sess.CycleLayout()
+	state = sess.GetLayoutState()
+	if state.LayoutType != "master_stack" {
+		t.Errorf("expected layout master_stack, got %s", state.LayoutType)
+	}
+
+	// Cycle layout -> grid
+	sess.CycleLayout()
+	state = sess.GetLayoutState()
+	if state.LayoutType != "grid" {
+		t.Errorf("expected layout grid, got %s", state.LayoutType)
+	}
+
+	// Rename workspace 1
+	sess.RenameWorkspace(1, "code")
+	state = sess.GetLayoutState()
+	found := false
+	for _, ws := range state.Workspaces {
+		if ws.ID == 1 && ws.Name == "code" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected workspace 1 to be named 'code', got %+v", state.Workspaces)
+	}
+}

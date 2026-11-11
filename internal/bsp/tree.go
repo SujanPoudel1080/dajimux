@@ -65,12 +65,23 @@ func (n *Node) IsLeaf() bool {
 	return n.Left == nil && n.Right == nil && n.PaneID != ""
 }
 
+// LayoutType defines the active tiling layout algorithm.
+type LayoutType string
+
+const (
+	LayoutBSP         LayoutType = "bsp"
+	LayoutMasterStack LayoutType = "master_stack"
+	LayoutEqualGrid   LayoutType = "grid"
+)
+
 // Tree manages the hierarchical binary tree of panes for a workspace.
 type Tree struct {
-	Root           *Node
-	ActivePaneID   string
-	MonoclePaneID  string
-	nodeCounter    int
+	Root          *Node
+	ActivePaneID  string
+	MonoclePaneID string
+	LayoutType    LayoutType
+	MasterRatio   float64
+	nodeCounter   int
 }
 
 // NewTree creates a new BSP tree initialized with a single root pane.
@@ -83,6 +94,8 @@ func NewTree(rootPaneID string) *Tree {
 	return &Tree{
 		Root:         root,
 		ActivePaneID: rootPaneID,
+		LayoutType:   LayoutBSP,
+		MasterRatio:  0.60,
 		nodeCounter:  1,
 	}
 }
@@ -211,6 +224,31 @@ func (t *Tree) Close(paneID string) error {
 	return nil
 }
 
+// CycleLayout advances to the next layout preset (bsp -> master_stack -> grid -> bsp).
+func (t *Tree) CycleLayout() LayoutType {
+	switch t.LayoutType {
+	case LayoutBSP, "":
+		t.LayoutType = LayoutMasterStack
+	case LayoutMasterStack:
+		t.LayoutType = LayoutEqualGrid
+	case LayoutEqualGrid:
+		t.LayoutType = LayoutBSP
+	default:
+		t.LayoutType = LayoutBSP
+	}
+	return t.LayoutType
+}
+
+// SetLayoutType sets the active layout preset.
+func (t *Tree) SetLayoutType(lt LayoutType) {
+	switch lt {
+	case LayoutMasterStack, LayoutEqualGrid:
+		t.LayoutType = lt
+	default:
+		t.LayoutType = LayoutBSP
+	}
+}
+
 // ComputeLayout calculates rectangular bounds for all nodes given terminal bounds and border gap.
 func (t *Tree) ComputeLayout(bounds Rect, borderGap int) {
 	if t.Root == nil {
@@ -226,7 +264,150 @@ func (t *Tree) ComputeLayout(bounds Rect, borderGap int) {
 		t.MonoclePaneID = "" // Reset if node not found
 	}
 
-	computeNodeLayout(t.Root, bounds, borderGap)
+	leaves := t.collectLeafNodes(t.Root)
+	if len(leaves) <= 1 {
+		computeNodeLayout(t.Root, bounds, borderGap)
+		return
+	}
+
+	switch t.LayoutType {
+	case LayoutMasterStack:
+		t.computeMasterStackLayout(leaves, bounds, borderGap)
+	case LayoutEqualGrid:
+		t.computeEqualGridLayout(leaves, bounds, borderGap)
+	default:
+		computeNodeLayout(t.Root, bounds, borderGap)
+	}
+}
+
+func (t *Tree) computeMasterStackLayout(leaves []*Node, bounds Rect, borderGap int) {
+	n := len(leaves)
+	if n == 0 {
+		return
+	}
+	if n == 1 {
+		leaves[0].Rect = bounds
+		return
+	}
+
+	ratio := t.MasterRatio
+	if ratio < 0.2 || ratio > 0.85 {
+		ratio = 0.60
+	}
+
+	availW := bounds.W - borderGap
+	if availW < 4 {
+		availW = 4
+	}
+	masterW := int(float64(availW) * ratio)
+	if masterW < 2 {
+		masterW = 2
+	}
+	stackW := bounds.W - masterW - borderGap
+	if stackW < 2 {
+		stackW = 2
+	}
+
+	// Master pane (first leaf)
+	leaves[0].Rect = Rect{
+		X: bounds.X,
+		Y: bounds.Y,
+		W: masterW,
+		H: bounds.H,
+	}
+
+	// Stack panes (remaining leaves 1..n-1)
+	stackCount := n - 1
+	totalStackGap := (stackCount - 1) * borderGap
+	availH := bounds.H - totalStackGap
+	if availH < stackCount {
+		availH = stackCount
+	}
+	baseH := availH / stackCount
+	remH := availH % stackCount
+
+	currY := bounds.Y
+	stackX := bounds.X + masterW + borderGap
+	for i := 1; i < n; i++ {
+		h := baseH
+		if i == n-1 {
+			h += remH
+		}
+		leaves[i].Rect = Rect{
+			X: stackX,
+			Y: currY,
+			W: stackW,
+			H: h,
+		}
+		currY += h + borderGap
+	}
+}
+
+func (t *Tree) computeEqualGridLayout(leaves []*Node, bounds Rect, borderGap int) {
+	n := len(leaves)
+	if n == 0 {
+		return
+	}
+	if n == 1 {
+		leaves[0].Rect = bounds
+		return
+	}
+
+	cols := int(math.Ceil(math.Sqrt(float64(n))))
+	rows := int(math.Ceil(float64(n) / float64(cols)))
+	if cols <= 0 {
+		cols = 1
+	}
+	if rows <= 0 {
+		rows = 1
+	}
+
+	totalGapW := (cols - 1) * borderGap
+	availW := bounds.W - totalGapW
+	if availW < cols {
+		availW = cols
+	}
+	cellW := availW / cols
+
+	totalGapH := (rows - 1) * borderGap
+	availH := bounds.H - totalGapH
+	if availH < rows {
+		availH = rows
+	}
+	cellH := availH / rows
+
+	for idx, leaf := range leaves {
+		r := idx / cols
+		c := idx % cols
+
+		actualCellW := cellW
+		actualX := bounds.X + c*(cellW+borderGap)
+
+		// On last column, absorb rounding differences
+		if c == cols-1 {
+			actualCellW = bounds.X + bounds.W - actualX
+		}
+
+		actualY := bounds.Y + r*(cellH+borderGap)
+		actualH := cellH
+		if r == rows-1 {
+			actualH = bounds.Y + bounds.H - actualY
+		}
+
+		if actualCellW < 1 {
+			actualCellW = 1
+		}
+		if actualH < 1 {
+			actualH = 1
+		}
+
+		leaf.Rect = Rect{
+			X: actualX,
+			Y: actualY,
+			W: actualCellW,
+			H: actualH,
+		}
+	}
 }
 
 func computeNodeLayout(node *Node, bounds Rect, borderGap int) {
@@ -465,8 +646,19 @@ func (t *Tree) ToggleMonocle(paneID string) {
 	}
 }
 
-// AdjustRatio modifies the split ratio of the parent of paneID.
+// AdjustRatio modifies the split ratio of the parent of paneID, or the master ratio in Master-Stack layout.
 func (t *Tree) AdjustRatio(paneID string, delta float64) {
+	if t.LayoutType == LayoutMasterStack {
+		newRatio := t.MasterRatio + delta
+		if newRatio < 0.2 {
+			newRatio = 0.2
+		} else if newRatio > 0.85 {
+			newRatio = 0.85
+		}
+		t.MasterRatio = newRatio
+		return
+	}
+
 	node := t.FindNode(paneID)
 	if node == nil || node.Parent == nil {
 		return

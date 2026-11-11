@@ -55,6 +55,11 @@ const (
 	ActionSwapUp           ActionType = "swap_up"
 	ActionSwapRight        ActionType = "swap_right"
 	ActionMoveToWorkspace  ActionType = "move_pane_ws"
+	ActionCycleLayout      ActionType = "cycle_layout"
+	ActionSetLayoutBSP     ActionType = "set_layout_bsp"
+	ActionSetLayoutMaster  ActionType = "set_layout_master_stack"
+	ActionSetLayoutGrid    ActionType = "set_layout_grid"
+	ActionRenameWorkspace  ActionType = "rename_workspace"
 )
 
 // InputResult contains the outcome of processing user keystrokes.
@@ -191,6 +196,8 @@ func (h *InputHandler) handleNormalMode(data []byte) InputResult {
 			return InputResult{Action: ActionClosePane}
 		case 'z': // Toggle Monocle / Zoom
 			return InputResult{Action: ActionToggleMonocle}
+		case 't': // Cycle Layout Preset (BSP -> Master-Stack -> Grid)
+			return InputResult{Action: ActionCycleLayout}
 		case 'r': // Enter Resize Mode
 			h.CurrentMode = protocol.ModeResize
 			return InputResult{Action: ActionModeChange, TargetMode: protocol.ModeResize}
