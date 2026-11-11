@@ -149,3 +149,65 @@ func TestInputHandlerSwapAndMove(t *testing.T) {
 		t.Fatalf("expected pendingMove to be reset")
 	}
 }
+
+func TestInputHandlerPrefixMode(t *testing.T) {
+	handler := NewInputHandler()
+	handler.SetPrefixMode("prefix", "ctrl-b")
+
+	if handler.LeaderKey != 0x02 {
+		t.Fatalf("expected LeaderKey 0x02, got %x", handler.LeaderKey)
+	}
+
+	// Normal typing passes through in INSERT mode
+	res := handler.HandleKey([]byte{'a'})
+	if res.Action != ActionPassThrough || string(res.RawForward) != "a" {
+		t.Fatalf("expected 'a' to passthrough, got %+v", res)
+	}
+
+	// Press leader (Ctrl+b = 0x02)
+	res = handler.HandleKey([]byte{0x02})
+	if res.Action != ActionModeChange || res.TargetMode != protocol.ModeNormal {
+		t.Fatalf("expected mode change to NORMAL on leader, got %+v", res)
+	}
+	if len(res.UndoBytes) > 0 {
+		t.Fatalf("expected no UndoBytes for prefix leader, got %v", res.UndoBytes)
+	}
+
+	// Next key is action (e.g. 's' for split horizontal) -> executes and returns to INSERT
+	res = handler.HandleKey([]byte{'s'})
+	if res.Action != ActionSplitHorizontal {
+		t.Fatalf("expected ActionSplitHorizontal, got %s", res.Action)
+	}
+	if res.TargetMode != protocol.ModeInsert || handler.CurrentMode != protocol.ModeInsert {
+		t.Fatalf("expected auto-return to INSERT mode, got target=%s, current=%s", res.TargetMode, handler.CurrentMode)
+	}
+
+	// Double leader sends literal Ctrl+b
+	res = handler.HandleKey([]byte{0x02})
+	if res.Action != ActionModeChange || res.TargetMode != protocol.ModeNormal {
+		t.Fatalf("expected leader to enter normal, got %+v", res)
+	}
+	res = handler.HandleKey([]byte{0x02})
+	if res.Action != ActionModeChange || res.TargetMode != protocol.ModeInsert {
+		t.Fatalf("expected second leader to return to INSERT, got %+v", res)
+	}
+	if len(res.RawForward) != 1 || res.RawForward[0] != 0x02 {
+		t.Fatalf("expected literal 0x02 in RawForward, got %v", res.RawForward)
+	}
+
+	// Test custom leader 'Ctrl+a'
+	handler.SetPrefixMode("prefix", "ctrl-a")
+	if handler.LeaderKey != 0x01 {
+		t.Fatalf("expected LeaderKey 0x01 for ctrl-a, got %x", handler.LeaderKey)
+	}
+	res = handler.HandleKey([]byte{0x01})
+	if res.Action != ActionModeChange || res.TargetMode != protocol.ModeNormal {
+		t.Fatalf("expected leader 0x01 to enter normal, got %+v", res)
+	}
+
+	// Escape cancels prefix
+	res = handler.HandleKey([]byte{0x1b})
+	if res.Action != ActionModeChange || res.TargetMode != protocol.ModeInsert {
+		t.Fatalf("expected escape to cancel prefix, got %+v", res)
+	}
+}

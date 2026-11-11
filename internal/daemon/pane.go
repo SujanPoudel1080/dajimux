@@ -30,19 +30,35 @@ type Pane struct {
 	maxLines    int
 	isClosed    bool
 	listeners   map[chan []byte]struct{}
+	onExit      func(paneID string)
 }
 
-// NewPane allocates a pane instance with in-memory scrollback buffer.
+// NewPane allocates a pane instance with default 2000 lines scrollback buffer.
 func NewPane(id, title string) *Pane {
+	return NewPaneWithConfig(id, title, 2000)
+}
+
+// NewPaneWithConfig allocates a pane instance with custom scrollback history limit.
+func NewPaneWithConfig(id, title string, maxLines int) *Pane {
+	if maxLines <= 0 {
+		maxLines = 2000
+	}
 	return &Pane{
 		ID:          id,
 		Title:       title,
 		maxRawBytes: 256 * 1024, // 256KB raw ANSI history for replay on attach
 		rawBuffer:   make([]byte, 0, 8192),
-		maxLines:    2000,
+		maxLines:    maxLines,
 		scrollback:  make([]string, 0, 500),
 		listeners:   make(map[chan []byte]struct{}),
 	}
+}
+
+// SetOnExit sets a callback to execute when the child process terminates.
+func (p *Pane) SetOnExit(fn func(paneID string)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onExit = fn
 }
 
 // Start spawns an interactive login shell inside a new pseudoterminal.
@@ -111,6 +127,12 @@ func (p *Pane) StartWithCwd(shellPath string, cols, rows int, env []string, cwd 
 	go func() {
 		_ = cmd.Wait()
 		p.Close()
+		p.mu.RLock()
+		exitCb := p.onExit
+		p.mu.RUnlock()
+		if exitCb != nil {
+			exitCb(p.ID)
+		}
 	}()
 
 	return nil

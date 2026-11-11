@@ -390,3 +390,143 @@ func TestSessionLayoutCycleAndWorkspaceRename(t *testing.T) {
 		t.Errorf("expected workspace 1 to be named 'code', got %+v", state.Workspaces)
 	}
 }
+
+func TestAutoPaneCleanupOnExit(t *testing.T) {
+	sess, err := NewSession("test-auto-cleanup", 80, 24, nil)
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	p2, err := sess.SplitActive(bsp.SplitVertical)
+	if err != nil {
+		t.Fatalf("failed to split: %v", err)
+	}
+
+	if len(sess.Panes) != 2 {
+		t.Fatalf("expected 2 panes, got %d", len(sess.Panes))
+	}
+
+	// Terminate p2's process to simulate shell exiting ('exit' or Ctrl+D)
+	if p2.Cmd != nil && p2.Cmd.Process != nil {
+		_ = p2.Cmd.Process.Kill()
+	}
+
+	// Wait up to 1 second for onExit callback to prune pane
+	cleaned := false
+	for i := 0; i < 20; i++ {
+		time.Sleep(50 * time.Millisecond)
+		sess.mu.RLock()
+		_, exists := sess.Panes[p2.ID]
+		sess.mu.RUnlock()
+		if !exists {
+			cleaned = true
+			break
+		}
+	}
+
+	if !cleaned {
+		t.Fatalf("expected pane %s to be automatically cleaned up after process exit", p2.ID)
+	}
+
+	// Verify tree has only 1 pane left
+	ws := sess.ActiveWorkspace()
+	leaves := ws.Tree.ListLeafPanes()
+	if len(leaves) != 1 {
+		t.Fatalf("expected 1 pane left in tree, got %d", len(leaves))
+	}
+}
+
+func TestDaemonKillSessionAndClosePane(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dajimux-kill-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	sockPath := filepath.Join(tmpDir, "kill.sock")
+	d := NewDaemon(sockPath)
+	if err := d.Start(); err != nil {
+		t.Fatalf("failed to start daemon: %v", err)
+	}
+	defer d.Stop()
+
+	go func() {
+		_ = d.AcceptLoop()
+	}()
+
+	sess, err := d.GetOrCreateSession("kill-target", 80, 24)
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	p2, err := sess.SplitActive(bsp.SplitVertical)
+	if err != nil {
+		t.Fatalf("failed to split: %v", err)
+	}
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	reader := protocol.NewEnvelopeReader(conn)
+
+	// Test MsgClosePane
+	closeReq, _ := json.Marshal(protocol.ClosePaneRequest{PaneID: p2.ID})
+	_ = protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type:    protocol.MsgClosePane,
+		Payload: closeReq,
+	})
+
+	for {
+		env, err := reader.Read()
+		if err != nil {
+			t.Fatalf("read failed: %v", err)
+		}
+		if env.Type == protocol.MsgClosePaneRes {
+			var res protocol.ClosePaneResponse
+			_ = json.Unmarshal(env.Payload, &res)
+			if !res.Success {
+				t.Fatalf("expected close pane success, got error: %s", res.Error)
+			}
+			break
+		}
+	}
+
+	sess.mu.RLock()
+	_, p2StillExists := sess.Panes[p2.ID]
+	sess.mu.RUnlock()
+	if p2StillExists {
+		t.Errorf("pane %s should have been removed after MsgClosePane", p2.ID)
+	}
+
+	// Test MsgKillSession
+	killReq, _ := json.Marshal(protocol.KillSessionRequest{SessionName: "kill-target"})
+	_ = protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type:    protocol.MsgKillSession,
+		Payload: killReq,
+	})
+
+	for {
+		env, err := reader.Read()
+		if err != nil {
+			t.Fatalf("read failed: %v", err)
+		}
+		if env.Type == protocol.MsgKillSessionRes {
+			var res protocol.KillSessionResponse
+			_ = json.Unmarshal(env.Payload, &res)
+			if !res.Success {
+				t.Fatalf("expected kill session success, got error: %s", res.Error)
+			}
+			break
+		}
+	}
+
+	d.mu.RLock()
+	_, sessStillExists := d.Sessions["kill-target"]
+	d.mu.RUnlock()
+	if sessStillExists {
+		t.Errorf("session 'kill-target' should have been destroyed after MsgKillSession")
+	}
+}

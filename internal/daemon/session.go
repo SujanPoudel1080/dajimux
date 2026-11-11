@@ -7,6 +7,7 @@ import (
 
 	"github.com/SujanPoudel1080/dajimux/internal/agent"
 	"github.com/SujanPoudel1080/dajimux/internal/bsp"
+	"github.com/SujanPoudel1080/dajimux/internal/config"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
 	"github.com/SujanPoudel1080/dajimux/internal/state"
 )
@@ -22,17 +23,26 @@ type Session struct {
 	Mode        protocol.Mode
 	Cols        int
 	Rows        int
+	Config      *config.Config
 	paneCounter int
 	OnStateChange func(state protocol.LayoutStatePayload)
 }
 
-// NewSession initializes a session with workspace 1 and an initial pane.
+// NewSession initializes a session with workspace 1 and an initial pane using default configuration.
 func NewSession(name string, cols, rows int, onStateChange func(protocol.LayoutStatePayload)) (*Session, error) {
+	return NewSessionWithConfig(name, cols, rows, nil, onStateChange)
+}
+
+// NewSessionWithConfig initializes a session with user configuration.
+func NewSessionWithConfig(name string, cols, rows int, cfg *config.Config, onStateChange func(protocol.LayoutStatePayload)) (*Session, error) {
 	if cols <= 0 {
 		cols = 80
 	}
 	if rows <= 0 {
 		rows = 24
+	}
+	if cfg == nil {
+		cfg = config.DefaultConfig()
 	}
 
 	s := &Session{
@@ -43,6 +53,7 @@ func NewSession(name string, cols, rows int, onStateChange func(protocol.LayoutS
 		Mode:          protocol.ModeInsert,
 		Cols:          cols,
 		Rows:          rows,
+		Config:        cfg,
 		paneCounter:   1,
 		OnStateChange: onStateChange,
 	}
@@ -59,7 +70,7 @@ func NewSession(name string, cols, rows int, onStateChange func(protocol.LayoutS
 
 	// Create initial pane
 	initialPaneID := s.nextPaneID()
-	initialPane := NewPane(initialPaneID, "shell")
+	initialPane := s.createPane(initialPaneID, "shell")
 	s.Panes[initialPaneID] = initialPane
 
 	ws := NewWorkspace(1, "main", initialPaneID)
@@ -71,11 +82,30 @@ func NewSession(name string, cols, rows int, onStateChange func(protocol.LayoutS
 		fmt.Sprintf("DAJIMUX_SESSION=%s", s.Name),
 		fmt.Sprintf("DAJIMUX_WORKSPACE=%d", 1),
 	}
-	if err := initialPane.Start("", ws.Bounds.W, ws.Bounds.H, env); err != nil {
+	if err := initialPane.Start(s.defaultShell(), ws.Bounds.W, ws.Bounds.H, env); err != nil {
 		return nil, fmt.Errorf("start initial pane: %w", err)
 	}
 
 	return s, nil
+}
+
+func (s *Session) createPane(id, title string) *Pane {
+	maxLines := 2000
+	if s.Config != nil && s.Config.General.ScrollbackLines > 0 {
+		maxLines = s.Config.General.ScrollbackLines
+	}
+	p := NewPaneWithConfig(id, title, maxLines)
+	p.SetOnExit(func(pid string) {
+		_ = s.ClosePaneByID(pid)
+	})
+	return p
+}
+
+func (s *Session) defaultShell() string {
+	if s.Config != nil && s.Config.General.DefaultShell != "" {
+		return s.Config.General.DefaultShell
+	}
+	return ""
 }
 
 func (s *Session) nextPaneID() string {
@@ -113,7 +143,7 @@ func (s *Session) SplitActive(dir bsp.SplitDirection) (*Pane, error) {
 
 	targetPaneID := ws.ActivePaneID()
 	newID := s.nextPaneID()
-	newPane := NewPane(newID, "shell")
+	newPane := s.createPane(newID, "shell")
 	s.Panes[newID] = newPane
 
 	_, err := ws.Tree.Split(targetPaneID, newID, dir, 0.5)
@@ -135,7 +165,7 @@ func (s *Session) SplitActive(dir bsp.SplitDirection) (*Pane, error) {
 		w, h = node.Rect.W, node.Rect.H
 	}
 
-	if err := newPane.Start("", w, h, env); err != nil {
+	if err := newPane.Start(s.defaultShell(), w, h, env); err != nil {
 		_ = ws.Tree.Close(newID)
 		delete(s.Panes, newID)
 		return nil, fmt.Errorf("failed to spawn pane process: %w", err)
@@ -160,7 +190,7 @@ func (s *Session) SpawnPane(dir bsp.SplitDirection, cwd string, initialCmd strin
 
 	targetPaneID := ws.ActivePaneID()
 	newID := s.nextPaneID()
-	newPane := NewPane(newID, "shell")
+	newPane := s.createPane(newID, "shell")
 	s.Panes[newID] = newPane
 
 	_, err := ws.Tree.Split(targetPaneID, newID, dir, 0.5)
@@ -182,7 +212,7 @@ func (s *Session) SpawnPane(dir bsp.SplitDirection, cwd string, initialCmd strin
 		w, h = node.Rect.W, node.Rect.H
 	}
 
-	if err := newPane.StartWithCwd("", w, h, env, cwd); err != nil {
+	if err := newPane.StartWithCwd(s.defaultShell(), w, h, env, cwd); err != nil {
 		_ = ws.Tree.Close(newID)
 		delete(s.Panes, newID)
 		return nil, fmt.Errorf("failed to spawn pane process: %w", err)
@@ -204,47 +234,77 @@ func (s *Session) SpawnPane(dir bsp.SplitDirection, cwd string, initialCmd strin
 
 // CloseActive closes the focused pane and rebalances the tree.
 func (s *Session) CloseActive() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	s.mu.RLock()
 	ws := s.Workspaces[s.ActiveWS]
 	if ws == nil {
+		s.mu.RUnlock()
 		return fmt.Errorf("no active workspace")
 	}
-
 	activeID := ws.ActivePaneID()
+	s.mu.RUnlock()
+
 	if activeID == "" {
 		return nil
 	}
+	return s.ClosePaneByID(activeID)
+}
 
-	pane := s.Panes[activeID]
-	if pane != nil {
-		pane.Close()
-		delete(s.Panes, activeID)
-		s.Broker.RemovePane(activeID)
+// ClosePaneByID terminates and removes a specific pane by its ID across any workspace.
+func (s *Session) ClosePaneByID(paneID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	pane, ok := s.Panes[paneID]
+	if !ok {
+		return nil
 	}
 
-	if err := ws.Tree.Close(activeID); err != nil {
-		return err
-	}
+	pane.Close()
+	delete(s.Panes, paneID)
+	s.Broker.RemovePane(paneID)
 
-	if ws.Tree.Root == nil {
-		// Workspace empty; delete workspace unless it's ws 1
-		if s.ActiveWS != 1 {
-			delete(s.Workspaces, s.ActiveWS)
-			s.ActiveWS = 1
-		} else {
-			// Respawn single initial pane in ws 1
-			newID := s.nextPaneID()
-			newPane := NewPane(newID, "shell")
-			s.Panes[newID] = newPane
-			ws.Tree = bsp.NewTree(newID)
-			_ = newPane.Start("", s.Cols, s.Rows-2, nil)
+	// Locate workspace holding this pane
+	var targetWS *Workspace
+	var targetWSID int
+	for wsID, ws := range s.Workspaces {
+		if ws.Tree != nil && ws.Tree.FindNode(paneID) != nil {
+			targetWS = ws
+			targetWSID = wsID
+			break
 		}
 	}
 
-	ws.Layout(s.Cols, s.Rows)
-	s.syncPaneSizes(ws)
+	if targetWS == nil {
+		return nil
+	}
+
+	if err := targetWS.Tree.Close(paneID); err != nil {
+		return err
+	}
+
+	if targetWS.Tree.Root == nil {
+		// Workspace empty; delete workspace unless it's ws 1
+		if targetWSID != 1 {
+			delete(s.Workspaces, targetWSID)
+			if s.ActiveWS == targetWSID {
+				s.ActiveWS = 1
+			}
+		} else {
+			// Respawn single initial pane in ws 1
+			newID := s.nextPaneID()
+			newPane := s.createPane(newID, "shell")
+			s.Panes[newID] = newPane
+			targetWS.Tree = bsp.NewTree(newID)
+			env := []string{
+				fmt.Sprintf("DAJIMUX_SESSION=%s", s.Name),
+				fmt.Sprintf("DAJIMUX_WORKSPACE=%d", 1),
+			}
+			_ = newPane.Start(s.defaultShell(), s.Cols, s.Rows-2, env)
+		}
+	}
+
+	targetWS.Layout(s.Cols, s.Rows)
+	s.syncPaneSizes(targetWS)
 
 	go s.NotifyState()
 	return nil
@@ -358,13 +418,13 @@ func (s *Session) MoveActiveToWorkspace(targetWS int) error {
 	if len(srcLeaves) <= 1 {
 		// Spawn replacement shell in source workspace so it is not left empty
 		newID := s.nextPaneID()
-		replacementPane := NewPane(newID, "shell")
+		replacementPane := s.createPane(newID, "shell")
 		s.Panes[newID] = replacementPane
 		env := []string{
 			fmt.Sprintf("DAJIMUX_SESSION=%s", s.Name),
 			fmt.Sprintf("DAJIMUX_WORKSPACE=%d", s.ActiveWS),
 		}
-		_ = replacementPane.Start("", srcWS.Bounds.W, srcWS.Bounds.H, env)
+		_ = replacementPane.Start(s.defaultShell(), srcWS.Bounds.W, srcWS.Bounds.H, env)
 		srcWS.Tree = bsp.NewTree(newID)
 	} else {
 		_ = srcWS.Tree.Close(activePaneID)
@@ -403,7 +463,7 @@ func (s *Session) SwitchWorkspace(num int) {
 	ws, exists := s.Workspaces[num]
 	if !exists {
 		newID := s.nextPaneID()
-		newPane := NewPane(newID, "shell")
+		newPane := s.createPane(newID, "shell")
 		s.Panes[newID] = newPane
 
 		ws = NewWorkspace(num, fmt.Sprintf("ws-%d", num), newID)
@@ -414,7 +474,7 @@ func (s *Session) SwitchWorkspace(num int) {
 			fmt.Sprintf("DAJIMUX_SESSION=%s", s.Name),
 			fmt.Sprintf("DAJIMUX_WORKSPACE=%d", num),
 		}
-		_ = newPane.Start("", ws.Bounds.W, ws.Bounds.H, env)
+		_ = newPane.Start(s.defaultShell(), ws.Bounds.W, ws.Bounds.H, env)
 	}
 
 	s.ActiveWS = num
@@ -637,12 +697,21 @@ func (s *Session) ToSerialized() *state.SerializedSession {
 }
 
 // RestoreSessionFromSerialized reconstructs a live Session from saved state.
+// RestoreSessionFromSerialized reconstructs a session from saved state and restarts shells.
 func RestoreSessionFromSerialized(ss *state.SerializedSession, cols, rows int, onStateChange func(protocol.LayoutStatePayload)) (*Session, error) {
+	return RestoreSessionFromSerializedWithConfig(ss, cols, rows, nil, onStateChange)
+}
+
+// RestoreSessionFromSerializedWithConfig reconstructs a session from saved state and configuration.
+func RestoreSessionFromSerializedWithConfig(ss *state.SerializedSession, cols, rows int, cfg *config.Config, onStateChange func(protocol.LayoutStatePayload)) (*Session, error) {
 	if cols <= 0 {
 		cols = 80
 	}
 	if rows <= 0 {
 		rows = 24
+	}
+	if cfg == nil {
+		cfg = config.DefaultConfig()
 	}
 
 	s := &Session{
@@ -653,6 +722,7 @@ func RestoreSessionFromSerialized(ss *state.SerializedSession, cols, rows int, o
 		Mode:          protocol.ModeInsert,
 		Cols:          cols,
 		Rows:          rows,
+		Config:        cfg,
 		paneCounter:   1,
 		OnStateChange: onStateChange,
 	}
@@ -669,7 +739,7 @@ func RestoreSessionFromSerialized(ss *state.SerializedSession, cols, rows int, o
 
 	// Recreate panes and launch processes in their respective CWDs
 	for id, sp := range ss.Panes {
-		pane := NewPane(id, sp.Title)
+		pane := s.createPane(id, sp.Title)
 		pane.Cwd = sp.Cwd
 		pane.AgentState = sp.AgentState
 		pane.AgentBadge = sp.AgentBadge
@@ -678,7 +748,7 @@ func RestoreSessionFromSerialized(ss *state.SerializedSession, cols, rows int, o
 		env := []string{
 			fmt.Sprintf("DAJIMUX_SESSION=%s", s.Name),
 		}
-		_ = pane.StartWithCwd("", cols, rows-2, env, sp.Cwd)
+		_ = pane.StartWithCwd(s.defaultShell(), cols, rows-2, env, sp.Cwd)
 	}
 
 	// Recreate workspaces and BSP trees
@@ -710,12 +780,12 @@ func RestoreSessionFromSerialized(ss *state.SerializedSession, cols, rows int, o
 	// Ensure there is at least one workspace
 	if len(s.Workspaces) == 0 {
 		initialPaneID := s.nextPaneID()
-		initialPane := NewPane(initialPaneID, "shell")
+		initialPane := s.createPane(initialPaneID, "shell")
 		s.Panes[initialPaneID] = initialPane
 		ws := NewWorkspace(1, "main", initialPaneID)
 		ws.Layout(cols, rows)
 		s.Workspaces[1] = ws
-		_ = initialPane.Start("", ws.Bounds.W, ws.Bounds.H, nil)
+		_ = initialPane.Start(s.defaultShell(), ws.Bounds.W, ws.Bounds.H, nil)
 	}
 
 	s.paneCounter = len(s.Panes) + 1

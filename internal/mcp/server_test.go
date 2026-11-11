@@ -14,6 +14,7 @@ type mockDaemonBridge struct {
 	capturedLines []string
 	lastSentCmd   string
 	lastPaneID    string
+	closedPaneID  string
 	lastState     string
 	lastBadge     string
 	spawnedPaneID string
@@ -39,6 +40,11 @@ func (m *mockDaemonBridge) SendCommand(paneID, command string, pressEnter bool) 
 
 func (m *mockDaemonBridge) SpawnPane(session, direction, cwd, command string) (string, error) {
 	return m.spawnedPaneID, nil
+}
+
+func (m *mockDaemonBridge) ClosePane(paneID string) error {
+	m.closedPaneID = paneID
+	return nil
 }
 
 func (m *mockDaemonBridge) SetAgentStatus(paneID, state, badge string) error {
@@ -77,7 +83,8 @@ func TestMCPServerLifecycleAndTools(t *testing.T) {
 		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_pane","arguments":{"pane_id":"pane-1","lines":10}}}`,
 		`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"send_command","arguments":{"pane_id":"pane-1","command":"echo hello"}}}`,
 		`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"spawn_pane","arguments":{"session":"main","direction":"vertical"}}}`,
-		`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"set_agent_status","arguments":{"pane_id":"pane-1","state":"building","badge":"🔨 Compiling"}}}`,
+		`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"close_pane","arguments":{"pane_id":"pane-2"}}}`,
+		`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"set_agent_status","arguments":{"pane_id":"pane-1","state":"building","badge":"🔨 Compiling"}}}`,
 	}
 
 	inBuf := bytes.NewBufferString(strings.Join(requests, "\n") + "\n")
@@ -88,9 +95,9 @@ func TestMCPServerLifecycleAndTools(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimSpace(outBuf.String()), "\n")
-	// Note: notifications/initialized produces no response, so 8 responses expected
-	if len(lines) != 8 {
-		t.Fatalf("expected 8 responses, got %d:\n%s", len(lines), outBuf.String())
+	// Note: notifications/initialized produces no response, so 9 responses expected
+	if len(lines) != 9 {
+		t.Fatalf("expected 9 responses, got %d:\n%s", len(lines), outBuf.String())
 	}
 
 	// 1. Check initialize
@@ -116,8 +123,8 @@ func TestMCPServerLifecycleAndTools(t *testing.T) {
 		} `json:"result"`
 	}
 	_ = json.Unmarshal([]byte(lines[2]), &resp3)
-	if len(resp3.Result.Tools) != 5 {
-		t.Errorf("expected 5 tools in tools/list, got %d", len(resp3.Result.Tools))
+	if len(resp3.Result.Tools) != 6 {
+		t.Errorf("expected 6 tools in tools/list, got %d", len(resp3.Result.Tools))
 	}
 
 	// 4. Check list_panes tool call
@@ -140,7 +147,12 @@ func TestMCPServerLifecycleAndTools(t *testing.T) {
 		t.Errorf("expected spawned pane-2 in result: %s", lines[6])
 	}
 
-	// 8. Check set_agent_status tool call
+	// 8. Check close_pane tool call
+	if !strings.Contains(lines[7], "closed successfully") || bridge.closedPaneID != "pane-2" {
+		t.Errorf("expected close_pane success in result: %s, closedPaneID=%s", lines[7], bridge.closedPaneID)
+	}
+
+	// 9. Check set_agent_status tool call
 	if bridge.lastBadge != "🔨 Compiling" || bridge.lastState != "building" {
 		t.Errorf("unexpected agent status update: badge=%s state=%s", bridge.lastBadge, bridge.lastState)
 	}

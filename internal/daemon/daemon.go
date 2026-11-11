@@ -10,19 +10,21 @@ import (
 	"time"
 
 	"github.com/SujanPoudel1080/dajimux/internal/bsp"
+	"github.com/SujanPoudel1080/dajimux/internal/config"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
 	"github.com/SujanPoudel1080/dajimux/internal/state"
 )
 
 // Daemon coordinates sessions, clients, and IPC sockets.
 type Daemon struct {
-	mu            sync.RWMutex
-	SocketPath    string
-	listener      net.Listener
-	Sessions      map[string]*Session
+	mu             sync.RWMutex
+	SocketPath     string
+	listener       net.Listener
+	Sessions       map[string]*Session
 	DefaultSession string
-	clients       map[net.Conn]*clientEntry
-	isClosing     bool
+	Config         *config.Config
+	clients        map[net.Conn]*clientEntry
+	isClosing      bool
 }
 
 type clientEntry struct {
@@ -40,15 +42,24 @@ func DefaultSocketPath() string {
 	return filepath.Join(dir, "daemon.sock")
 }
 
-// NewDaemon initializes a daemon server.
+// NewDaemon initializes a daemon server with default configuration.
 func NewDaemon(socketPath string) *Daemon {
+	return NewDaemonWithConfig(socketPath, nil)
+}
+
+// NewDaemonWithConfig initializes a daemon server with user configuration.
+func NewDaemonWithConfig(socketPath string, cfg *config.Config) *Daemon {
 	if socketPath == "" {
 		socketPath = DefaultSocketPath()
+	}
+	if cfg == nil {
+		cfg = config.DefaultConfig()
 	}
 	return &Daemon{
 		SocketPath:     socketPath,
 		Sessions:       make(map[string]*Session),
 		DefaultSession: "main",
+		Config:         cfg,
 		clients:        make(map[net.Conn]*clientEntry),
 	}
 }
@@ -111,7 +122,7 @@ func (d *Daemon) GetOrCreateSession(name string, cols, rows int) (*Session, erro
 	// Try restoring from persisted session state
 	if st, err := state.LoadStateFromFile(""); err == nil && st != nil {
 		if ss, ok := st.Sessions[name]; ok {
-			s, err := RestoreSessionFromSerialized(ss, cols, rows, func(state protocol.LayoutStatePayload) {
+			s, err := RestoreSessionFromSerializedWithConfig(ss, cols, rows, d.Config, func(state protocol.LayoutStatePayload) {
 				d.broadcastLayoutState(name, state)
 			})
 			if err == nil {
@@ -121,7 +132,7 @@ func (d *Daemon) GetOrCreateSession(name string, cols, rows int) (*Session, erro
 		}
 	}
 
-	s, err := NewSession(name, cols, rows, func(state protocol.LayoutStatePayload) {
+	s, err := NewSessionWithConfig(name, cols, rows, d.Config, func(state protocol.LayoutStatePayload) {
 		d.broadcastLayoutState(name, state)
 	})
 	if err != nil {
@@ -409,6 +420,66 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 				})
 			}
 
+		case protocol.MsgClosePane:
+			var req protocol.ClosePaneRequest
+			_ = json.Unmarshal(env.Payload, &req)
+
+			if req.PaneID == "" {
+				resData, _ := json.Marshal(protocol.ClosePaneResponse{
+					Success: false,
+					Error:   "pane_id is required",
+				})
+				_ = writer.Write(protocol.Envelope{
+					Type:    protocol.MsgClosePaneRes,
+					Payload: resData,
+				})
+				continue
+			}
+
+			err := d.ClosePaneByID(req.PaneID)
+			errStr := ""
+			if err != nil {
+				errStr = err.Error()
+			}
+			resData, _ := json.Marshal(protocol.ClosePaneResponse{
+				Success: err == nil,
+				Error:   errStr,
+			})
+			_ = writer.Write(protocol.Envelope{
+				Type:    protocol.MsgClosePaneRes,
+				Payload: resData,
+			})
+
+		case protocol.MsgKillSession:
+			var req protocol.KillSessionRequest
+			_ = json.Unmarshal(env.Payload, &req)
+
+			if req.SessionName == "" {
+				resData, _ := json.Marshal(protocol.KillSessionResponse{
+					Success: false,
+					Error:   "session_name is required",
+				})
+				_ = writer.Write(protocol.Envelope{
+					Type:    protocol.MsgKillSessionRes,
+					Payload: resData,
+				})
+				continue
+			}
+
+			err := d.KillSession(req.SessionName)
+			errStr := ""
+			if err != nil {
+				errStr = err.Error()
+			}
+			resData, _ := json.Marshal(protocol.KillSessionResponse{
+				Success: err == nil,
+				Error:   errStr,
+			})
+			_ = writer.Write(protocol.Envelope{
+				Type:    protocol.MsgKillSessionRes,
+				Payload: resData,
+			})
+
 		case protocol.MsgStopServer:
 			_ = writer.Write(protocol.Envelope{
 				Type:    protocol.MsgStopServerRes,
@@ -513,7 +584,11 @@ func (d *Daemon) handleAction(s *Session, action protocol.ActionPayload) {
 	case "split_v":
 		_, _ = s.SplitActive(bsp.SplitVertical)
 	case "close_pane":
-		_ = s.CloseActive()
+		if paneID := action.Params["pane_id"]; paneID != "" {
+			_ = s.ClosePaneByID(paneID)
+		} else {
+			_ = s.CloseActive()
+		}
 	case "nav_left":
 		s.Navigate(bsp.NavLeft)
 	case "nav_down":
@@ -644,6 +719,68 @@ func (d *Daemon) SaveState(path string) error {
 	return state.SaveStateToFile(path, st)
 }
 
+// ClosePaneByID finds the session containing paneID and terminates the pane.
+func (d *Daemon) ClosePaneByID(paneID string) error {
+	d.mu.RLock()
+	var targetSession *Session
+	for _, sess := range d.Sessions {
+		sess.mu.RLock()
+		_, exists := sess.Panes[paneID]
+		sess.mu.RUnlock()
+		if exists {
+			targetSession = sess
+			break
+		}
+	}
+	d.mu.RUnlock()
+
+	if targetSession == nil {
+		return fmt.Errorf("pane %q not found", paneID)
+	}
+
+	return targetSession.ClosePaneByID(paneID)
+}
+
+// KillSession terminates all panes in a session, disconnects attached clients, and removes it.
+func (d *Daemon) KillSession(name string) error {
+	d.mu.Lock()
+	sess, ok := d.Sessions[name]
+	if !ok {
+		d.mu.Unlock()
+		return fmt.Errorf("session %q not found", name)
+	}
+
+	// Terminate all panes in the session
+	sess.mu.Lock()
+	for _, pane := range sess.Panes {
+		_ = pane.Close()
+	}
+	sess.Panes = make(map[string]*Pane)
+	sess.Workspaces = make(map[int]*Workspace)
+	sess.mu.Unlock()
+
+	// Detach connected clients
+	for conn, entry := range d.clients {
+		if entry.session != nil && entry.session.Name == name {
+			_ = entry.writer.Write(protocol.Envelope{
+				Type: protocol.MsgBell,
+			})
+			_ = entry.writer.Write(protocol.Envelope{
+				Type:    protocol.MsgError,
+				Payload: []byte(fmt.Sprintf("%q", fmt.Sprintf("session %s was terminated", name))),
+			})
+			delete(d.clients, conn)
+			_ = conn.Close()
+		}
+	}
+
+	delete(d.Sessions, name)
+	d.mu.Unlock()
+
+	_ = d.SaveState("")
+	return nil
+}
+
 // RestoreSessions reads the persisted session snapshot and restores sessions into memory.
 func (d *Daemon) RestoreSessions(path string) error {
 	st, err := state.LoadStateFromFile(path)
@@ -656,7 +793,7 @@ func (d *Daemon) RestoreSessions(path string) error {
 
 	for name, ss := range st.Sessions {
 		if _, exists := d.Sessions[name]; !exists {
-			sess, err := RestoreSessionFromSerialized(ss, 80, 24, func(lsp protocol.LayoutStatePayload) {
+			sess, err := RestoreSessionFromSerializedWithConfig(ss, 80, 24, d.Config, func(lsp protocol.LayoutStatePayload) {
 				d.broadcastLayoutState(name, lsp)
 			})
 			if err == nil {

@@ -35,7 +35,7 @@ _dajimux() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="attach list ls daemon stop kill-server restore service mcp config layout workspace agent msg pane peer completion man version help"
+    local commands="attach list ls daemon stop kill-server kill-session restore service mcp config layout workspace agent msg pane peer completion man version help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
@@ -45,7 +45,7 @@ _dajimux() {
     local cmd="${words[1]}"
 
     case "${cmd}" in
-        attach|restore)
+        attach|restore|kill-session)
             local sessions=$(_dajimux_sessions)
             COMPREPLY=( $(compgen -W "${sessions}" -- "${cur}") )
             ;;
@@ -146,6 +146,7 @@ _dajimux() {
                 'daemon:Run the background session daemon'
                 'stop:Gracefully stop the background daemon'
                 'kill-server:Gracefully stop the background daemon'
+                'kill-session:Terminate a specific active session'
                 'restore:Restore session from persisted state'
                 'service:Manage daemon background service'
                 'mcp:Run Model Context Protocol (MCP) server over stdio'
@@ -165,7 +166,7 @@ _dajimux() {
             ;;
         args)
             case $words[1] in
-                attach|restore)
+                attach|restore|kill-session)
                     _dajimux_sessions
                     ;;
                 service)
@@ -251,6 +252,7 @@ complete -f -c dajimux -n '__fish_dajimux_needs_command' -a list -d 'List active
 complete -f -c dajimux -n '__fish_dajimux_needs_command' -a ls -d 'List active sessions'
 complete -f -c dajimux -n '__fish_dajimux_needs_command' -a daemon -d 'Run background session daemon'
 complete -f -c dajimux -n '__fish_dajimux_needs_command' -a stop -d 'Stop background daemon'
+complete -f -c dajimux -n '__fish_dajimux_needs_command' -a kill-session -d 'Terminate an active session'
 complete -f -c dajimux -n '__fish_dajimux_needs_command' -a restore -d 'Restore session from persisted state'
 complete -f -c dajimux -n '__fish_dajimux_needs_command' -a service -d 'Manage background system service'
 complete -f -c dajimux -n '__fish_dajimux_needs_command' -a mcp -d 'Run Model Context Protocol server over stdio'
@@ -268,6 +270,7 @@ complete -f -c dajimux -n '__fish_dajimux_needs_command' -a version -d 'Print ve
 # Subcommand completions
 complete -f -c dajimux -n '__fish_dajimux_using_command attach' -a '(__fish_dajimux_sessions)' -d 'Session'
 complete -f -c dajimux -n '__fish_dajimux_using_command restore' -a '(__fish_dajimux_sessions)' -d 'Session'
+complete -f -c dajimux -n '__fish_dajimux_using_command kill-session' -a '(__fish_dajimux_sessions)' -d 'Session'
 complete -f -c dajimux -n '__fish_dajimux_using_command service' -a 'install status uninstall'
 complete -f -c dajimux -n '__fish_dajimux_using_command config' -a 'init path show'
 complete -f -c dajimux -n '__fish_dajimux_using_command completion' -a 'bash zsh fish'

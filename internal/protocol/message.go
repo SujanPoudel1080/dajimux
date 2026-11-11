@@ -38,6 +38,10 @@ const (
 	MsgListPanesRes    MessageType = "list_panes_res"
 	MsgSpawnPane       MessageType = "spawn_pane"
 	MsgSpawnPaneRes    MessageType = "spawn_pane_res"
+	MsgClosePane       MessageType = "close_pane"
+	MsgClosePaneRes    MessageType = "close_pane_res"
+	MsgKillSession     MessageType = "kill_session"
+	MsgKillSessionRes  MessageType = "kill_session_res"
 	MsgStopServer      MessageType = "stop_server"
 	MsgStopServerRes   MessageType = "stop_server_res"
 )
@@ -201,6 +205,28 @@ type SpawnPaneRequest struct {
 type SpawnPaneResponse struct {
 	Success bool   `json:"success"`
 	PaneID  string `json:"pane_id,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// ClosePaneRequest requests closing a specific pane by ID.
+type ClosePaneRequest struct {
+	PaneID string `json:"pane_id"`
+}
+
+// ClosePaneResponse contains the result of closing a pane.
+type ClosePaneResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+// KillSessionRequest requests the daemon to terminate a specific session.
+type KillSessionRequest struct {
+	SessionName string `json:"session_name"`
+}
+
+// KillSessionResponse contains the result of terminating a session.
+type KillSessionResponse struct {
+	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
 }
 
