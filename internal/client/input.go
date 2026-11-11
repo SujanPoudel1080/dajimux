@@ -1,6 +1,7 @@
 package client
 
 import (
+	"strings"
 	"time"
 
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
@@ -9,6 +10,9 @@ import (
 // InputHandler processes raw input bytes and manages modal state transitions.
 type InputHandler struct {
 	CurrentMode        protocol.Mode
+	PrefixMode         string // "modal" (default) or "prefix"
+	LeaderKey          byte   // default: 0x02 (Ctrl+b) in prefix mode
+	inPrefix           bool
 	doubleTapThreshold time.Duration
 	lastSpaceTime      time.Time
 	pendingMove        bool
@@ -76,6 +80,8 @@ type InputResult struct {
 func NewInputHandler() *InputHandler {
 	return &InputHandler{
 		CurrentMode:        protocol.ModeInsert,
+		PrefixMode:         "modal",
+		LeaderKey:          ' ',
 		doubleTapThreshold: 280 * time.Millisecond,
 	}
 }
@@ -84,6 +90,30 @@ func NewInputHandler() *InputHandler {
 func (h *InputHandler) SetDoubleTapThreshold(d time.Duration) {
 	if d > 0 {
 		h.doubleTapThreshold = d
+	}
+}
+
+// SetPrefixMode configures whether the handler uses modal Space+Space or tmux/screen prefix mode.
+func (h *InputHandler) SetPrefixMode(mode, leader string) {
+	if strings.ToLower(strings.TrimSpace(mode)) == "prefix" {
+		h.PrefixMode = "prefix"
+		switch strings.ToLower(strings.TrimSpace(leader)) {
+		case "ctrl-a", "c-a", "\x01":
+			h.LeaderKey = 0x01
+		case "ctrl-space", "c-space", "ctrl-@", "\x00":
+			h.LeaderKey = 0x00
+		case "ctrl-b", "c-b", "\x02", "":
+			h.LeaderKey = 0x02
+		default:
+			if len(leader) == 1 {
+				h.LeaderKey = leader[0]
+			} else {
+				h.LeaderKey = 0x02
+			}
+		}
+	} else {
+		h.PrefixMode = "modal"
+		h.LeaderKey = ' '
 	}
 }
 
@@ -111,7 +141,23 @@ func (h *InputHandler) HandleKey(data []byte) InputResult {
 }
 
 func (h *InputHandler) handleInsertMode(data []byte) InputResult {
-	// Check for double-tapping of Space key (0x20)
+	// Prefix mode: trigger on leader key (e.g. Ctrl+b)
+	if h.PrefixMode == "prefix" {
+		if len(data) == 1 && data[0] == h.LeaderKey {
+			h.inPrefix = true
+			h.CurrentMode = protocol.ModeNormal
+			return InputResult{
+				Action:     ActionModeChange,
+				TargetMode: protocol.ModeNormal,
+			}
+		}
+		return InputResult{
+			Action:     ActionPassThrough,
+			RawForward: data,
+		}
+	}
+
+	// Modal mode: check for double-tapping of Space key (0x20)
 	if len(data) == 1 && data[0] == ' ' {
 		now := time.Now()
 		if !h.lastSpaceTime.IsZero() && now.Sub(h.lastSpaceTime) < h.doubleTapThreshold {
@@ -146,79 +192,128 @@ func (h *InputHandler) handleNormalMode(data []byte) InputResult {
 	if len(data) == 1 {
 		b := data[0]
 
+		// In prefix mode, pressing leader key twice sends the literal leader key to the shell
+		if h.inPrefix && b == h.LeaderKey {
+			h.inPrefix = false
+			h.CurrentMode = protocol.ModeInsert
+			return InputResult{
+				Action:     ActionModeChange,
+				TargetMode: protocol.ModeInsert,
+				RawForward: []byte{h.LeaderKey},
+			}
+		}
+
+		// Escape or Ctrl+C cancels normal/prefix mode
+		if b == 0x1b || (h.inPrefix && b == 0x03) {
+			h.inPrefix = false
+			h.pendingMove = false
+			h.CurrentMode = protocol.ModeInsert
+			return InputResult{Action: ActionModeChange, TargetMode: protocol.ModeInsert}
+		}
+
 		// If pending workspace move operator ('m' was pressed)
 		if h.pendingMove {
 			h.pendingMove = false
 			if b >= '1' && b <= '9' {
-				return InputResult{
+				res := InputResult{
 					Action:       ActionMoveToWorkspace,
 					WorkspaceNum: int(b - '0'),
 				}
+				if h.inPrefix {
+					h.inPrefix = false
+					h.CurrentMode = protocol.ModeInsert
+					res.TargetMode = protocol.ModeInsert
+				}
+				return res
 			}
-			// Cancel pending move if any other key pressed
+			if h.inPrefix {
+				h.inPrefix = false
+				h.CurrentMode = protocol.ModeInsert
+				return InputResult{Action: ActionModeChange, TargetMode: protocol.ModeInsert}
+			}
 			return InputResult{Action: ActionNone}
 		}
 
 		// Switch back to Insert Mode: 'i', 'a', or Enter (0x0d)
 		if b == 'i' || b == 'a' || b == '\r' || b == '\n' {
+			h.inPrefix = false
 			h.CurrentMode = protocol.ModeInsert
 			return InputResult{Action: ActionModeChange, TargetMode: protocol.ModeInsert}
 		}
 
-		// Vim Directional Navigation (h, j, k, l)
+		var res InputResult
+
+		// Directional & window management keystrokes
 		switch b {
 		case 'h':
-			return InputResult{Action: ActionNavLeft}
+			res = InputResult{Action: ActionNavLeft}
 		case 'j':
-			return InputResult{Action: ActionNavDown}
+			res = InputResult{Action: ActionNavDown}
 		case 'k':
-			return InputResult{Action: ActionNavUp}
+			res = InputResult{Action: ActionNavUp}
 		case 'l':
-			return InputResult{Action: ActionNavRight}
+			res = InputResult{Action: ActionNavRight}
 		case 'H':
-			return InputResult{Action: ActionSwapLeft}
+			res = InputResult{Action: ActionSwapLeft}
 		case 'J':
-			return InputResult{Action: ActionSwapDown}
+			res = InputResult{Action: ActionSwapDown}
 		case 'K':
-			return InputResult{Action: ActionSwapUp}
+			res = InputResult{Action: ActionSwapUp}
 		case 'L':
-			return InputResult{Action: ActionSwapRight}
+			res = InputResult{Action: ActionSwapRight}
 		case 'w': // Swap with next pane in tree
-			return InputResult{Action: ActionSwapNext}
+			res = InputResult{Action: ActionSwapNext}
 		case 'm': // Move pane to workspace operator
 			h.pendingMove = true
 			return InputResult{Action: ActionNone}
 		case 's': // Split Horizontal
-			return InputResult{Action: ActionSplitHorizontal}
+			res = InputResult{Action: ActionSplitHorizontal}
 		case 'v': // Split Vertical
-			return InputResult{Action: ActionSplitVertical}
+			res = InputResult{Action: ActionSplitVertical}
 		case 'x': // Close Pane
-			return InputResult{Action: ActionClosePane}
+			res = InputResult{Action: ActionClosePane}
 		case 'z': // Toggle Monocle / Zoom
-			return InputResult{Action: ActionToggleMonocle}
+			res = InputResult{Action: ActionToggleMonocle}
 		case 't': // Cycle Layout Preset (BSP -> Master-Stack -> Grid)
-			return InputResult{Action: ActionCycleLayout}
+			res = InputResult{Action: ActionCycleLayout}
 		case 'r': // Enter Resize Mode
+			h.inPrefix = false
 			h.CurrentMode = protocol.ModeResize
 			return InputResult{Action: ActionModeChange, TargetMode: protocol.ModeResize}
 		case ':', ' ': // Open Command Palette
+			h.inPrefix = false
 			h.CurrentMode = protocol.ModeCommandPalette
 			return InputResult{Action: ActionOpenPalette, TargetMode: protocol.ModeCommandPalette}
 		case '[', 0x15: // Enter Scrollback Vi-Mode
+			h.inPrefix = false
 			h.CurrentMode = protocol.ModeScrollback
 			return InputResult{Action: ActionEnterScrollback, TargetMode: protocol.ModeScrollback}
 		case 'd', 'D': // Detach Session
-			return InputResult{Action: ActionDetach}
-		}
-
-		// Workspace Switching: '1' through '9'
-		if b >= '1' && b <= '9' {
-			ws := int(b - '0')
-			return InputResult{
-				Action:       ActionSwitchWorkspace,
-				WorkspaceNum: ws,
+			res = InputResult{Action: ActionDetach}
+		default:
+			if b >= '1' && b <= '9' {
+				res = InputResult{
+					Action:       ActionSwitchWorkspace,
+					WorkspaceNum: int(b - '0'),
+				}
+			} else {
+				if h.inPrefix {
+					h.inPrefix = false
+					h.CurrentMode = protocol.ModeInsert
+					return InputResult{Action: ActionModeChange, TargetMode: protocol.ModeInsert}
+				}
+				return InputResult{Action: ActionNone}
 			}
 		}
+
+		// In prefix mode, executing an action automatically returns to INSERT mode
+		if h.inPrefix {
+			h.inPrefix = false
+			h.CurrentMode = protocol.ModeInsert
+			res.TargetMode = protocol.ModeInsert
+		}
+
+		return res
 	}
 
 	return InputResult{Action: ActionNone}

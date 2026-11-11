@@ -233,6 +233,17 @@ func (s *Server) listTools() []Tool {
 			},
 		},
 		{
+			Name:        "close_pane",
+			Description: "Close and terminate a specific terminal pane by its ID, rebalancing the workspace layout.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]PropertyDef{
+					"pane_id": {Type: "string", Description: "Target pane ID to close (e.g. 'pane-2')"},
+				},
+				Required: []string{"pane_id"},
+			},
+		},
+		{
 			Name:        "set_agent_status",
 			Description: "Update the agent state and status badge displayed in a pane's header.",
 			InputSchema: InputSchema{
@@ -333,6 +344,24 @@ func (s *Server) callTool(name string, args json.RawMessage) (ToolCallResult, er
 		return ToolCallResult{
 			Content: []TextContent{
 				{Type: "text", Text: fmt.Sprintf("Spawned pane %s successfully.", paneID)},
+			},
+		}, nil
+
+	case "close_pane":
+		var params struct {
+			PaneID string `json:"pane_id"`
+		}
+		if err := json.Unmarshal(args, &params); err != nil || params.PaneID == "" {
+			return ToolCallResult{}, fmt.Errorf("pane_id is required")
+		}
+
+		if err := s.Bridge.ClosePane(params.PaneID); err != nil {
+			return ToolCallResult{}, err
+		}
+
+		return ToolCallResult{
+			Content: []TextContent{
+				{Type: "text", Text: fmt.Sprintf("Pane %s closed successfully.", params.PaneID)},
 			},
 		}, nil
 

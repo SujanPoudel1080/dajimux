@@ -41,6 +41,7 @@ type Client struct {
 	origTerm        *syscall.Termios
 	isRunning       bool
 	dragStart        *DragPoint
+	yankToast        string
 	prevPaletteX     int
 	prevPaletteY     int
 	prevPaletteW     int
@@ -67,6 +68,7 @@ func NewClientWithConfig(socketPath, sessionName string, cfg *config.Config) *Cl
 	if cfg.Input.ModalDoubleTapMs > 0 {
 		handler.SetDoubleTapThreshold(time.Duration(cfg.Input.ModalDoubleTapMs) * time.Millisecond)
 	}
+	handler.SetPrefixMode(cfg.Input.PrefixMode, cfg.Input.CustomLeader)
 
 	return &Client{
 		SocketPath:   socketPath,
@@ -264,6 +266,22 @@ func (c *Client) readStdinLoop() error {
 			_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
 				Type:    protocol.MsgInput,
 				Payload: ip,
+			})
+		}
+
+		// Forward raw bytes if present on non-passthrough action (e.g. double-tap leader in prefix mode)
+		if len(res.RawForward) > 0 && res.Action != ActionPassThrough {
+			ip, _ := json.Marshal(protocol.InputPayload{Data: res.RawForward})
+			_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
+				Type:    protocol.MsgInput,
+				Payload: ip,
+			})
+		}
+
+		// Notify daemon of mode return (e.g. returning to INSERT after a prefix action)
+		if res.TargetMode != "" && res.Action != ActionModeChange {
+			c.sendAction("mode_change", map[string]string{
+				"target": string(res.TargetMode),
 			})
 		}
 
@@ -919,9 +937,15 @@ func (c *Client) renderScrollback() {
 	}
 
 	// Footer banner
-	b.WriteString(fmt.Sprintf("\033[%d;1H\033[48;5;166m\033[38;5;255m", rows)) // Orange banner
+	bannerBg := "\033[48;5;166m\033[38;5;255m" // Orange banner default
 	status := fmt.Sprintf(" -- SCROLLBACK [%d/%d] -- (k/j: line, ^u/^d: page, g/G: top/bottom, y: yank, q: exit) ",
 		totalLines-offset, totalLines)
+	if c.yankToast != "" {
+		bannerBg = "\033[48;5;28m\033[38;5;255m\033[1m" // Bright green banner for toast confirmation
+		status = fmt.Sprintf(" %s ", c.yankToast)
+	}
+
+	b.WriteString(fmt.Sprintf("\033[%d;1H%s", rows, bannerBg))
 	b.WriteString(status)
 	if cols > len(status) {
 		b.WriteString(strings.Repeat(" ", cols-len(status)))
@@ -952,7 +976,9 @@ func (c *Client) yankScrollback() {
 	}
 
 	var visibleText string
+	numLines := 0
 	if startIdx < endIdx {
+		numLines = endIdx - startIdx
 		visibleText = strings.Join(lines[startIdx:endIdx], "\n")
 	}
 
@@ -960,6 +986,19 @@ func (c *Client) yankScrollback() {
 		b64 := base64.StdEncoding.EncodeToString([]byte(visibleText))
 		fmt.Printf("\033]52;c;%s\a", b64)
 	}
+
+	c.mu.Lock()
+	c.yankToast = fmt.Sprintf("✓ Copied %d lines to clipboard (OSC 52)", numLines)
+	c.mu.Unlock()
+	c.renderScrollback()
+
+	go func() {
+		time.Sleep(2 * time.Second)
+		c.mu.Lock()
+		c.yankToast = ""
+		c.mu.Unlock()
+		c.renderScrollback()
+	}()
 }
 
 // renderPalette draws an interactive floating overlay box centered on the terminal screen.

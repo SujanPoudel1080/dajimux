@@ -16,6 +16,7 @@ type DaemonBridge interface {
 	ReadPane(paneID string, lines int) ([]string, error)
 	SendCommand(paneID, command string, pressEnter bool) error
 	SpawnPane(session, direction, cwd, command string) (string, error)
+	ClosePane(paneID string) error
 	SetAgentStatus(paneID, state, badge string) error
 }
 
@@ -170,6 +171,43 @@ func (b *SocketDaemonBridge) SpawnPane(session, direction, cwd, command string) 
 	}
 
 	return "", fmt.Errorf("timeout waiting for spawn_pane_res")
+}
+
+func (b *SocketDaemonBridge) ClosePane(paneID string) error {
+	conn, reader, err := b.dial()
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	reqData, _ := json.Marshal(protocol.ClosePaneRequest{
+		PaneID: paneID,
+	})
+	if err := protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type:    protocol.MsgClosePane,
+		Payload: reqData,
+	}); err != nil {
+		return err
+	}
+
+	for i := 0; i < 10; i++ {
+		env, err := reader.Read()
+		if err != nil {
+			return err
+		}
+		if env.Type == protocol.MsgClosePaneRes {
+			var res protocol.ClosePaneResponse
+			if err := json.Unmarshal(env.Payload, &res); err != nil {
+				return err
+			}
+			if !res.Success {
+				return fmt.Errorf("close pane failed: %s", res.Error)
+			}
+			return nil
+		}
+	}
+
+	return fmt.Errorf("timeout waiting for close_pane_res")
 }
 
 func (b *SocketDaemonBridge) SetAgentStatus(paneID, state, badge string) error {

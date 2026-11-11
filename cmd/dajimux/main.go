@@ -65,6 +65,9 @@ func main() {
 	case "kill-server", "stop":
 		runStopServerCmd()
 
+	case "kill-session":
+		runKillSessionCmd(os.Args[2:])
+
 	case "peer":
 		runPeerCmd(os.Args[2:])
 
@@ -117,6 +120,7 @@ Usage:
   dajimux list / ls            List active sessions and pane counts
   dajimux daemon               Run the background session daemon
   dajimux stop / kill-server   Gracefully stop the background daemon
+  dajimux kill-session <name>  Terminate a specific active session
   dajimux attach <name>        Attach to a named session
   dajimux restore [name]       Restore session from persisted state
   dajimux service [action]     Manage daemon service (install, status, uninstall)
@@ -313,7 +317,8 @@ func runDaemonCmd(args []string) {
 	sockPath := fs.String("socket", daemon.DefaultSocketPath(), "Path to unix domain socket")
 	_ = fs.Parse(args)
 
-	d := daemon.NewDaemon(*sockPath)
+	cfg := loadClientConfig()
+	d := daemon.NewDaemonWithConfig(*sockPath, cfg)
 	if err := d.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start daemon: %v\n", err)
 		os.Exit(1)
@@ -670,6 +675,62 @@ func runStopServerCmd() {
 	_, _ = reader.Read()
 
 	fmt.Println("dajimux daemon stopped.")
+}
+
+func runKillSessionCmd(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: dajimux kill-session <session-name>\n")
+		os.Exit(1)
+	}
+	sessionName := args[0]
+
+	sockPath := os.Getenv("DAJIMUX_SOCK")
+	if sockPath == "" {
+		sockPath = daemon.DefaultSocketPath()
+	}
+
+	if !isDaemonRunning(sockPath) {
+		fmt.Println("No dajimux daemon is running.")
+		return
+	}
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Connect failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+	reqData, _ := json.Marshal(protocol.KillSessionRequest{SessionName: sessionName})
+	if err := protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type:    protocol.MsgKillSession,
+		Payload: reqData,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "Kill session request failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	reader := protocol.NewEnvelopeReader(conn)
+	for i := 0; i < 10; i++ {
+		env, err := reader.Read()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Read failed: %v\n", err)
+			os.Exit(1)
+		}
+		if env.Type == protocol.MsgKillSessionRes {
+			var res protocol.KillSessionResponse
+			_ = json.Unmarshal(env.Payload, &res)
+			if !res.Success {
+				fmt.Fprintf(os.Stderr, "Failed to kill session %q: %s\n", sessionName, res.Error)
+				os.Exit(1)
+			}
+			fmt.Printf("Session %q terminated successfully.\n", sessionName)
+			return
+		}
+	}
+	fmt.Fprintf(os.Stderr, "Timeout waiting for daemon response.\n")
+	os.Exit(1)
 }
 
 func runCompletionCmd(args []string) {
