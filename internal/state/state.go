@@ -29,6 +29,7 @@ type SerializedSession struct {
 type SerializedWorkspace struct {
 	ID           int                `json:"id"`
 	Name         string             `json:"name"`
+	LayoutType   string             `json:"layout_type,omitempty"`
 	ActivePaneID string             `json:"active_pane_id"`
 	Tree         *SerializedBSPNode `json:"tree"`
 }

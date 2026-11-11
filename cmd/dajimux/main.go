@@ -90,6 +90,12 @@ func main() {
 	case "man":
 		runManCmd(os.Args[2:])
 
+	case "layout":
+		runLayoutCmd(os.Args[2:])
+
+	case "workspace", "ws":
+		runWorkspaceCmd(os.Args[2:])
+
 	case "help", "--help", "-h":
 		printHelp()
 
@@ -123,6 +129,8 @@ Usage:
   dajimux pane capture [flags] Capture lines from a sibling pane
   dajimux peer listen [flags]  Listen for incoming peer connections
   dajimux peer connect <addr>  Connect to a remote dajimux peer session
+  dajimux layout [preset]      Switch or cycle layouts (cycle, bsp, master, grid)
+  dajimux workspace [action]   Manage workspaces (rename <name>, switch <n>)
   dajimux version              Print version information
 
 Vim Modal Controls:
@@ -131,6 +139,7 @@ Vim Modal Controls:
     h, j, k, l                 Spatial pane navigation
     w                          Swap active pane with next pane
     H, J, K, L                 Spatial pane swap (left, down, up, right)
+    t                          Cycle layout preset (BSP -> Master-Stack -> Grid)
     s                          Split pane horizontally
     v                          Split pane vertically
     m <1-9>                    Move active pane to workspace 1..9
@@ -683,6 +692,94 @@ func runManCmd(args []string) {
 	}
 	if err := man.View(version, raw, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "Error displaying man page: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runLayoutCmd(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: dajimux layout [cycle | bsp | master | grid]")
+		return
+	}
+	sub := args[0]
+	sockPath := daemon.DefaultSocketPath()
+
+	var action protocol.ActionPayload
+	switch sub {
+	case "cycle":
+		action = protocol.ActionPayload{Action: "cycle_layout"}
+	case "bsp":
+		action = protocol.ActionPayload{Action: "set_layout", Params: map[string]string{"type": "bsp"}}
+	case "master", "master-stack":
+		action = protocol.ActionPayload{Action: "set_layout", Params: map[string]string{"type": "master_stack"}}
+	case "grid":
+		action = protocol.ActionPayload{Action: "set_layout", Params: map[string]string{"type": "grid"}}
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown layout: %s. Use: cycle, bsp, master, grid\n", sub)
+		os.Exit(1)
+	}
+
+	data, _ := json.Marshal(action)
+	env := protocol.Envelope{
+		Type:    protocol.MsgAction,
+		Payload: data,
+	}
+	if err := sendEnvelopeOnce(sockPath, env); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to send layout action: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Layout updated: %s\n", sub)
+}
+
+func runWorkspaceCmd(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: dajimux workspace [rename <name> [--workspace <n>] | switch <n>]")
+		return
+	}
+	sub := args[0]
+	sockPath := daemon.DefaultSocketPath()
+
+	switch sub {
+	case "rename":
+		if len(args) < 2 {
+			fmt.Println("Error: workspace name required. Usage: dajimux workspace rename <name> [--workspace <n>]")
+			os.Exit(1)
+		}
+		name := args[1]
+		ws := ""
+		if len(args) >= 4 && (args[2] == "--workspace" || args[2] == "-w") {
+			ws = args[3]
+		}
+		params := map[string]string{"name": name}
+		if ws != "" {
+			params["workspace"] = ws
+		}
+		data, _ := json.Marshal(protocol.ActionPayload{
+			Action: "rename_workspace",
+			Params: params,
+		})
+		if err := sendEnvelopeOnce(sockPath, protocol.Envelope{Type: protocol.MsgAction, Payload: data}); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to rename workspace: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Workspace renamed to %q\n", name)
+
+	case "switch":
+		if len(args) < 2 {
+			fmt.Println("Usage: dajimux workspace switch <1-9>")
+			os.Exit(1)
+		}
+		data, _ := json.Marshal(protocol.ActionPayload{
+			Action: "switch_workspace",
+			Params: map[string]string{"workspace": args[1]},
+		})
+		if err := sendEnvelopeOnce(sockPath, protocol.Envelope{Type: protocol.MsgAction, Payload: data}); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to switch workspace: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Switched to workspace %s\n", args[1])
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown workspace command: %s. Use: rename, switch\n", sub)
 		os.Exit(1)
 	}
 }

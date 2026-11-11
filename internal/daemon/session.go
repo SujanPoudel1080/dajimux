@@ -492,6 +492,42 @@ func (s *Session) SetMode(m protocol.Mode) {
 	go s.NotifyState()
 }
 
+// RenameWorkspace changes the friendly name of workspace wsID.
+func (s *Session) RenameWorkspace(wsID int, newName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ws, ok := s.Workspaces[wsID]; ok && newName != "" {
+		ws.Rename(newName)
+	}
+	go s.NotifyState()
+}
+
+// CycleLayout advances the layout preset on the active workspace.
+func (s *Session) CycleLayout() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ws := s.Workspaces[s.ActiveWS]
+	if ws != nil && ws.Tree != nil {
+		ws.Tree.CycleLayout()
+		ws.Layout(s.Cols, s.Rows)
+		s.syncPaneSizes(ws)
+	}
+	go s.NotifyState()
+}
+
+// SetLayout updates the layout preset for the active workspace.
+func (s *Session) SetLayout(lt bsp.LayoutType) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ws := s.Workspaces[s.ActiveWS]
+	if ws != nil && ws.Tree != nil {
+		ws.Tree.SetLayoutType(lt)
+		ws.Layout(s.Cols, s.Rows)
+		s.syncPaneSizes(ws)
+	}
+	go s.NotifyState()
+}
+
 // GetLayoutState generates the current state payload for clients.
 func (s *Session) GetLayoutState() protocol.LayoutStatePayload {
 	s.mu.RLock()
@@ -525,10 +561,27 @@ func (s *Session) GetLayoutState() protocol.LayoutStatePayload {
 		}
 	}
 
+	workspacesMeta := make([]protocol.WorkspaceMeta, 0, len(s.Workspaces))
+	for i := 1; i <= 9; i++ {
+		if w, ok := s.Workspaces[i]; ok {
+			workspacesMeta = append(workspacesMeta, protocol.WorkspaceMeta{
+				ID:   i,
+				Name: w.Name,
+			})
+		}
+	}
+
+	layoutTypeStr := "bsp"
+	if ws != nil && ws.Tree != nil && ws.Tree.LayoutType != "" {
+		layoutTypeStr = string(ws.Tree.LayoutType)
+	}
+
 	return protocol.LayoutStatePayload{
 		SessionName:     s.Name,
 		ActiveWorkspace: s.ActiveWS,
 		TotalWorkspaces: len(s.Workspaces),
+		Workspaces:      workspacesMeta,
+		LayoutType:      layoutTypeStr,
 		ActivePaneID:    ws.ActivePaneID(),
 		Mode:            s.Mode,
 		Panes:           panes,
@@ -572,6 +625,7 @@ func (s *Session) ToSerialized() *state.SerializedSession {
 		sws := &state.SerializedWorkspace{
 			ID:           ws.ID,
 			Name:         ws.Name,
+			LayoutType:   string(ws.Tree.LayoutType),
 			ActivePaneID: ws.Tree.ActivePaneID,
 			Tree:         state.SerializeBSPNode(ws.Tree.Root),
 		}
@@ -629,12 +683,18 @@ func RestoreSessionFromSerialized(ss *state.SerializedSession, cols, rows int, o
 
 	// Recreate workspaces and BSP trees
 	for id, sws := range ss.Workspaces {
+		lt := bsp.LayoutBSP
+		if sws.LayoutType != "" {
+			lt = bsp.LayoutType(sws.LayoutType)
+		}
 		ws := &Workspace{
 			ID:   sws.ID,
 			Name: sws.Name,
 			Tree: &bsp.Tree{
 				Root:          state.DeserializeBSPNode(sws.Tree, nil),
 				ActivePaneID:  sws.ActivePaneID,
+				LayoutType:    lt,
+				MasterRatio:   0.60,
 				MonoclePaneID: "",
 			},
 		}
