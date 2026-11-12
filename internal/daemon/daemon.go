@@ -198,13 +198,17 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 			if err := json.Unmarshal(env.Payload, &p); err == nil {
 				if env.PaneID != "" {
 					d.mu.RLock()
+					var targetPane *Pane
 					for _, s := range d.Sessions {
-						if targetPane, ok := s.Panes[env.PaneID]; ok {
-							_, _ = targetPane.Write(p.Data)
+						if p := s.GetPane(env.PaneID); p != nil {
+							targetPane = p
 							break
 						}
 					}
 					d.mu.RUnlock()
+					if targetPane != nil {
+						_, _ = targetPane.Write(p.Data)
+					}
 				} else if attachedSession != nil {
 					if active := attachedSession.ActivePane(); active != nil {
 						_, _ = active.Write(p.Data)
@@ -814,13 +818,7 @@ func (d *Daemon) KillSession(name string) error {
 	}
 
 	// Terminate all panes in the session
-	sess.mu.Lock()
-	for _, pane := range sess.Panes {
-		_ = pane.Close()
-	}
-	sess.Panes = make(map[string]*Pane)
-	sess.Workspaces = make(map[int]*Workspace)
-	sess.mu.Unlock()
+	sess.Close()
 
 	// Detach connected clients
 	for conn, entry := range d.clients {
@@ -948,11 +946,15 @@ func (d *Daemon) Stop() {
 	}
 	_ = os.Remove(d.SocketPath)
 
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+	d.mu.Lock()
+	sessions := make([]*Session, 0, len(d.Sessions))
 	for _, sess := range d.Sessions {
-		for _, pane := range sess.Panes {
-			_ = pane.Close()
-		}
+		sessions = append(sessions, sess)
+	}
+	d.Sessions = make(map[string]*Session)
+	d.mu.Unlock()
+
+	for _, sess := range sessions {
+		sess.Close()
 	}
 }
