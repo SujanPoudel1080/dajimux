@@ -164,6 +164,35 @@ func TestANSICompositorCSI_G_And_K(t *testing.T) {
 	}
 }
 
+func TestANSICompositorEraseBelowPrompt(t *testing.T) {
+	// Pane at (offX: 2, offY: 3), width 80, height 20
+	comp := NewANSICompositor(2, 3, 80, 20)
+
+	// Step 1: user runs ls, shell outputs directory names on row 1 and advances to row 2
+	out1 := comp.Rewrite([]byte("Documents    Downloads    Projects\r\n"))
+	if !bytes.Contains(out1, []byte("Documents    Downloads    Projects")) {
+		t.Fatalf("expected directories in output, got: %q", out1)
+	}
+	if comp.curRow != 2 {
+		t.Fatalf("expected curRow to be 2 after newline, got %d", comp.curRow)
+	}
+
+	// Step 2: shell prints prompt and emits \033[J (clear below, clr_eos)
+	out2 := comp.Rewrite([]byte("\033[Juser@mac:~$ "))
+	// \033[J must NOT reset curRow to 1, and must NOT clear line 1!
+	if comp.curRow != 2 {
+		t.Fatalf("expected curRow to remain 2 after \\033[J, got %d", comp.curRow)
+	}
+	// Prompt should be printed at terminal row 4 (offY 3 + curRow 2 - 1 = 4)
+	if !bytes.Contains(out2, []byte("\033[4;2H")) {
+		t.Fatalf("expected prompt positioned on row 4, got: %q", out2)
+	}
+	// Erase below must NOT erase row 3 (which is terminal row for pane line 1)
+	if bytes.Contains(out2, []byte("\033[3;2H\033[80X")) {
+		t.Fatalf("eraseBelow mistakenly cleared line 1 (row 3): %q", out2)
+	}
+}
+
 func TestANSICompositorMixedOutput(t *testing.T) {
 	comp := NewANSICompositor(1, 2, 80, 22)
 

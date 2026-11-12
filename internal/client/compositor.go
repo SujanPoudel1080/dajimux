@@ -224,10 +224,10 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 					}
 				} else if params == "1" {
 					// Erase from start of pane line to cursor
-					out = append(out, fmt.Sprintf("\033[%dG\033[%dX\033[%dG", ac.offX, ac.curCol, ac.offX+ac.curCol-1)...)
+					out = append(out, fmt.Sprintf("\033[%d;%dH\033[%dX\033[%d;%dH", ac.curRow+ac.offY-1, ac.offX, ac.curCol, ac.curRow+ac.offY-1, ac.offX+ac.curCol-1)...)
 				} else if params == "2" {
 					// Erase entire line within pane
-					out = append(out, fmt.Sprintf("\033[%dG\033[%dX\033[%dG", ac.offX, ac.w, ac.offX+ac.curCol-1)...)
+					out = append(out, fmt.Sprintf("\033[%d;%dH\033[%dX\033[%d;%dH", ac.curRow+ac.offY-1, ac.offX, ac.w, ac.curRow+ac.offY-1, ac.offX+ac.curCol-1)...)
 				}
 
 			case 'X': // Erase Character: CSI <n>X
@@ -240,13 +240,18 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 					out = append(out, fmt.Sprintf("\033[%dX", n)...)
 				}
 
-			case 'J': // Erase in Display
-				if params == "2" || params == "" {
+			case 'J': // Erase in Display: CSI <n>J
+				if params == "2" {
+					// 2: Erase entire pane viewport (e.g. from clear command)
 					out = append(out, ac.erasePaneViewport()...)
 					ac.curRow = 1
 					ac.curCol = 1
-				} else {
-					out = append(out, input[i:i+seqLen]...)
+				} else if params == "" || params == "0" {
+					// 0 (default / clr_eos): Erase from cursor to bottom of pane without wiping lines above
+					out = append(out, ac.eraseBelow()...)
+				} else if params == "1" {
+					// 1: Erase from top of pane to cursor
+					out = append(out, ac.eraseAbove()...)
 				}
 
 			case 'r': // Set scrolling region — drop (we manage viewport globally)
@@ -316,6 +321,41 @@ func (ac *ANSICompositor) erasePaneViewport() []byte {
 		b.WriteString(fmt.Sprintf("\033[%d;%dH\033[%dX", row, ac.offX, ac.w))
 	}
 	b.WriteString(fmt.Sprintf("\033[%d;%dH", ac.offY, ac.offX))
+	return b.Bytes()
+}
+
+// eraseBelow erases from the current cursor position to the bottom of the pane viewport
+// without touching lines above the cursor or moving the cursor position.
+func (ac *ANSICompositor) eraseBelow() []byte {
+	var b bytes.Buffer
+	// 1. Erase remaining characters on current row
+	rem := ac.w - ac.curCol + 1
+	if rem > 0 {
+		b.WriteString(fmt.Sprintf("\033[%dX", rem))
+	}
+	// 2. Erase all rows below current row within pane bounds
+	for r := ac.curRow + 1; r <= ac.h; r++ {
+		rowTerm := r + ac.offY - 1
+		b.WriteString(fmt.Sprintf("\033[%d;%dH\033[%dX", rowTerm, ac.offX, ac.w))
+	}
+	// 3. Restore cursor position
+	b.WriteString(fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1))
+	return b.Bytes()
+}
+
+// eraseAbove erases from the top of the pane to the current cursor position.
+func (ac *ANSICompositor) eraseAbove() []byte {
+	var b bytes.Buffer
+	for r := 1; r < ac.curRow; r++ {
+		rowTerm := r + ac.offY - 1
+		b.WriteString(fmt.Sprintf("\033[%d;%dH\033[%dX", rowTerm, ac.offX, ac.w))
+	}
+	// Erase start of current row up to cursor
+	if ac.curCol > 0 {
+		b.WriteString(fmt.Sprintf("\033[%d;%dH\033[%dX", ac.curRow+ac.offY-1, ac.offX, ac.curCol))
+	}
+	// Restore cursor position
+	b.WriteString(fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1))
 	return b.Bytes()
 }
 

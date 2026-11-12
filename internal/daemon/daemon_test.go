@@ -19,6 +19,8 @@ func TestDaemonLifecycleAndSession(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	t.Setenv("DAJIMUX_STATE_PATH", filepath.Join(tmpDir, "state.json"))
+
 	sockPath := filepath.Join(tmpDir, "test-daemon.sock")
 	d := NewDaemon(sockPath)
 	if err := d.Start(); err != nil {
@@ -259,6 +261,8 @@ func TestDaemonListPanesAndSpawnPane(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	t.Setenv("DAJIMUX_STATE_PATH", filepath.Join(tmpDir, "state.json"))
+
 	sockPath := filepath.Join(tmpDir, "panes.sock")
 	d := NewDaemon(sockPath)
 	if err := d.Start(); err != nil {
@@ -457,6 +461,8 @@ func TestDaemonKillSessionAndClosePane(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	t.Setenv("DAJIMUX_STATE_PATH", filepath.Join(tmpDir, "state.json"))
+
 	sockPath := filepath.Join(tmpDir, "kill.sock")
 	d := NewDaemon(sockPath)
 	if err := d.Start(); err != nil {
@@ -551,6 +557,8 @@ func TestDaemonRenameSessionAndWorkspace(t *testing.T) {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
+
+	t.Setenv("DAJIMUX_STATE_PATH", filepath.Join(tmpDir, "state.json"))
 
 	sockPath := filepath.Join(tmpDir, "rename.sock")
 	d := NewDaemon(sockPath)
