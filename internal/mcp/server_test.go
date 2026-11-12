@@ -47,6 +47,14 @@ func (m *mockDaemonBridge) ClosePane(paneID string) error {
 	return nil
 }
 
+func (m *mockDaemonBridge) RenameWorkspace(session string, wsID int, newName string) error {
+	return nil
+}
+
+func (m *mockDaemonBridge) RenameSession(oldName, newName string) error {
+	return nil
+}
+
 func (m *mockDaemonBridge) SetAgentStatus(paneID, state, badge string) error {
 	m.lastPaneID = paneID
 	m.lastState = state
@@ -123,8 +131,8 @@ func TestMCPServerLifecycleAndTools(t *testing.T) {
 		} `json:"result"`
 	}
 	_ = json.Unmarshal([]byte(lines[2]), &resp3)
-	if len(resp3.Result.Tools) != 6 {
-		t.Errorf("expected 6 tools in tools/list, got %d", len(resp3.Result.Tools))
+	if len(resp3.Result.Tools) != 8 {
+		t.Errorf("expected 8 tools in tools/list, got %d", len(resp3.Result.Tools))
 	}
 
 	// 4. Check list_panes tool call

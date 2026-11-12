@@ -42,6 +42,10 @@ const (
 	MsgClosePaneRes    MessageType = "close_pane_res"
 	MsgKillSession     MessageType = "kill_session"
 	MsgKillSessionRes  MessageType = "kill_session_res"
+	MsgRenameSession   MessageType = "rename_session"
+	MsgRenameSessionRes MessageType = "rename_session_res"
+	MsgRenameWorkspace MessageType = "rename_workspace"
+	MsgRenameWorkspaceRes MessageType = "rename_workspace_res"
 	MsgStopServer      MessageType = "stop_server"
 	MsgStopServerRes   MessageType = "stop_server_res"
 )
@@ -226,6 +230,31 @@ type KillSessionRequest struct {
 
 // KillSessionResponse contains the result of terminating a session.
 type KillSessionResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+// RenameSessionRequest requests renaming an active session.
+type RenameSessionRequest struct {
+	OldName string `json:"old_name"`
+	NewName string `json:"new_name"`
+}
+
+// RenameSessionResponse contains the result of renaming a session.
+type RenameSessionResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+// RenameWorkspaceRequest requests renaming a workspace in a session.
+type RenameWorkspaceRequest struct {
+	SessionName string `json:"session_name"`
+	WorkspaceID int    `json:"workspace_id"`
+	NewName     string `json:"new_name"`
+}
+
+// RenameWorkspaceResponse contains the result of renaming a workspace.
+type RenameWorkspaceResponse struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
 }

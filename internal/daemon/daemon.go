@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -480,6 +481,66 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 				Payload: resData,
 			})
 
+		case protocol.MsgRenameSession:
+			var req protocol.RenameSessionRequest
+			_ = json.Unmarshal(env.Payload, &req)
+
+			if req.OldName == "" || req.NewName == "" {
+				resData, _ := json.Marshal(protocol.RenameSessionResponse{
+					Success: false,
+					Error:   "old_name and new_name are required",
+				})
+				_ = writer.Write(protocol.Envelope{
+					Type:    protocol.MsgRenameSessionRes,
+					Payload: resData,
+				})
+				continue
+			}
+
+			err := d.RenameSession(req.OldName, req.NewName)
+			errStr := ""
+			if err != nil {
+				errStr = err.Error()
+			}
+			resData, _ := json.Marshal(protocol.RenameSessionResponse{
+				Success: err == nil,
+				Error:   errStr,
+			})
+			_ = writer.Write(protocol.Envelope{
+				Type:    protocol.MsgRenameSessionRes,
+				Payload: resData,
+			})
+
+		case protocol.MsgRenameWorkspace:
+			var req protocol.RenameWorkspaceRequest
+			_ = json.Unmarshal(env.Payload, &req)
+
+			if req.NewName == "" {
+				resData, _ := json.Marshal(protocol.RenameWorkspaceResponse{
+					Success: false,
+					Error:   "new_name is required",
+				})
+				_ = writer.Write(protocol.Envelope{
+					Type:    protocol.MsgRenameWorkspaceRes,
+					Payload: resData,
+				})
+				continue
+			}
+
+			err := d.RenameWorkspace(req.SessionName, req.WorkspaceID, req.NewName)
+			errStr := ""
+			if err != nil {
+				errStr = err.Error()
+			}
+			resData, _ := json.Marshal(protocol.RenameWorkspaceResponse{
+				Success: err == nil,
+				Error:   errStr,
+			})
+			_ = writer.Write(protocol.Envelope{
+				Type:    protocol.MsgRenameWorkspaceRes,
+				Payload: resData,
+			})
+
 		case protocol.MsgStopServer:
 			_ = writer.Write(protocol.Envelope{
 				Type:    protocol.MsgStopServerRes,
@@ -583,6 +644,8 @@ func (d *Daemon) handleAction(s *Session, action protocol.ActionPayload) {
 		_, _ = s.SplitActive(bsp.SplitHorizontal)
 	case "split_v":
 		_, _ = s.SplitActive(bsp.SplitVertical)
+	case "split_auto":
+		_, _ = s.SplitActiveAuto()
 	case "close_pane":
 		if paneID := action.Params["pane_id"]; paneID != "" {
 			_ = s.ClosePaneByID(paneID)
@@ -778,6 +841,72 @@ func (d *Daemon) KillSession(name string) error {
 	d.mu.Unlock()
 
 	_ = d.SaveState("")
+	return nil
+}
+
+// RenameSession updates the identifier of an active session and preserves connected clients.
+func (d *Daemon) RenameSession(oldName, newName string) error {
+	d.mu.Lock()
+
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		d.mu.Unlock()
+		return fmt.Errorf("new session name cannot be empty")
+	}
+	if oldName == newName {
+		d.mu.Unlock()
+		return nil
+	}
+
+	sess, ok := d.Sessions[oldName]
+	if !ok {
+		d.mu.Unlock()
+		return fmt.Errorf("session %q not found", oldName)
+	}
+
+	if _, exists := d.Sessions[newName]; exists {
+		d.mu.Unlock()
+		return fmt.Errorf("session %q already exists", newName)
+	}
+
+	sess.mu.Lock()
+	sess.Name = newName
+	sess.mu.Unlock()
+
+	delete(d.Sessions, oldName)
+	d.Sessions[newName] = sess
+
+	if d.DefaultSession == oldName {
+		d.DefaultSession = newName
+	}
+
+	d.mu.Unlock()
+
+	// Notify attached clients of updated session name
+	go sess.NotifyState()
+
+	_ = d.SaveState("")
+	return nil
+}
+
+// RenameWorkspace assigns a new display name to a workspace within a session.
+func (d *Daemon) RenameWorkspace(sessionName string, wsID int, newName string) error {
+	d.mu.RLock()
+	if sessionName == "" {
+		sessionName = d.DefaultSession
+	}
+	sess, ok := d.Sessions[sessionName]
+	d.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("session %q not found", sessionName)
+	}
+
+	if wsID <= 0 {
+		wsID = sess.ActiveWS
+	}
+
+	sess.RenameWorkspace(wsID, newName)
 	return nil
 }
 

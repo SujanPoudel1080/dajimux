@@ -64,6 +64,7 @@ const (
 	ActionSetLayoutMaster  ActionType = "set_layout_master_stack"
 	ActionSetLayoutGrid    ActionType = "set_layout_grid"
 	ActionRenameWorkspace  ActionType = "rename_workspace"
+	ActionSplitAuto        ActionType = "split_auto"
 )
 
 // InputResult contains the outcome of processing user keystrokes.
@@ -115,6 +116,11 @@ func (h *InputHandler) SetPrefixMode(mode, leader string) {
 		h.PrefixMode = "modal"
 		h.LeaderKey = ' '
 	}
+}
+
+// InPrefix reports whether the handler is currently awaiting a command after the leader key.
+func (h *InputHandler) InPrefix() bool {
+	return h.inPrefix
 }
 
 // HandleKey processes a sequence of input bytes based on the active mode.
@@ -270,6 +276,8 @@ func (h *InputHandler) handleNormalMode(data []byte) InputResult {
 			res = InputResult{Action: ActionSplitHorizontal}
 		case 'v': // Split Vertical
 			res = InputResult{Action: ActionSplitVertical}
+		case 'e': // Split Auto (horizontal/vertical based on aspect ratio)
+			res = InputResult{Action: ActionSplitAuto}
 		case 'x': // Close Pane
 			res = InputResult{Action: ActionClosePane}
 		case 'z': // Toggle Monocle / Zoom

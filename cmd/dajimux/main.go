@@ -68,6 +68,12 @@ func main() {
 	case "kill-session":
 		runKillSessionCmd(os.Args[2:])
 
+	case "rename-session":
+		runRenameSessionCmd(os.Args[2:])
+
+	case "session":
+		runSessionCmd(os.Args)
+
 	case "peer":
 		runPeerCmd(os.Args[2:])
 
@@ -121,6 +127,8 @@ Usage:
   dajimux daemon               Run the background session daemon
   dajimux stop / kill-server   Gracefully stop the background daemon
   dajimux kill-session <name>  Terminate a specific active session
+  dajimux rename-session <old> <new>  Rename an active session
+  dajimux session [rename|kill|ls]    Manage sessions
   dajimux attach <name>        Attach to a named session
   dajimux restore [name]       Restore session from persisted state
   dajimux service [action]     Manage daemon service (install, status, uninstall)
@@ -731,6 +739,85 @@ func runKillSessionCmd(args []string) {
 	}
 	fmt.Fprintf(os.Stderr, "Timeout waiting for daemon response.\n")
 	os.Exit(1)
+}
+
+func runRenameSessionCmd(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: dajimux rename-session <old-name> <new-name>\n")
+		os.Exit(1)
+	}
+	oldName := args[0]
+	newName := args[1]
+
+	sockPath := os.Getenv("DAJIMUX_SOCK")
+	if sockPath == "" {
+		sockPath = daemon.DefaultSocketPath()
+	}
+
+	if !isDaemonRunning(sockPath) {
+		fmt.Println("No dajimux daemon is running.")
+		return
+	}
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Connect failed: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+	reqData, _ := json.Marshal(protocol.RenameSessionRequest{
+		OldName: oldName,
+		NewName: newName,
+	})
+	if err := protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type:    protocol.MsgRenameSession,
+		Payload: reqData,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "Rename session request failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	reader := protocol.NewEnvelopeReader(conn)
+	for i := 0; i < 10; i++ {
+		env, err := reader.Read()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Read failed: %v\n", err)
+			os.Exit(1)
+		}
+		if env.Type == protocol.MsgRenameSessionRes {
+			var res protocol.RenameSessionResponse
+			_ = json.Unmarshal(env.Payload, &res)
+			if !res.Success {
+				fmt.Fprintf(os.Stderr, "Failed to rename session: %s\n", res.Error)
+				os.Exit(1)
+			}
+			fmt.Printf("Session %q renamed to %q successfully.\n", oldName, newName)
+			return
+		}
+	}
+	fmt.Fprintf(os.Stderr, "Timeout waiting for daemon response.\n")
+	os.Exit(1)
+}
+
+func runSessionCmd(args []string) {
+	if len(args) < 2 {
+		fmt.Println("Usage: dajimux session [rename <old> <new> | kill <name> | list]")
+		return
+	}
+	sub := args[1]
+	switch sub {
+	case "rename":
+		runRenameSessionCmd(args[2:])
+	case "kill":
+		runKillSessionCmd(args[2:])
+	case "list", "ls":
+		runListCmd()
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown session action: %s. Use: rename, kill, list\n", sub)
+		os.Exit(1)
+	}
 }
 
 func runCompletionCmd(args []string) {

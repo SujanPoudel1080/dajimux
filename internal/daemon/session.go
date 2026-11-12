@@ -178,6 +178,28 @@ func (s *Session) SplitActive(dir bsp.SplitDirection) (*Pane, error) {
 	return newPane, nil
 }
 
+// SplitActiveAuto automatically splits the active pane vertically if wide, or horizontally if tall.
+func (s *Session) SplitActiveAuto() (*Pane, error) {
+	s.mu.RLock()
+	ws := s.Workspaces[s.ActiveWS]
+	if ws == nil {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("no active workspace")
+	}
+	targetID := ws.ActivePaneID()
+	dir := bsp.SplitHorizontal
+	if ws.Tree != nil {
+		if node := ws.Tree.FindNode(targetID); node != nil {
+			if node.Rect.W > (node.Rect.H * 2) {
+				dir = bsp.SplitVertical
+			}
+		}
+	}
+	s.mu.RUnlock()
+
+	return s.SplitActive(dir)
+}
+
 // SpawnPane dynamically splits the active pane and launches a shell with optional CWD and initial command.
 func (s *Session) SpawnPane(dir bsp.SplitDirection, cwd string, initialCmd string) (*Pane, error) {
 	s.mu.Lock()

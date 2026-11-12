@@ -17,6 +17,8 @@ type DaemonBridge interface {
 	SendCommand(paneID, command string, pressEnter bool) error
 	SpawnPane(session, direction, cwd, command string) (string, error)
 	ClosePane(paneID string) error
+	RenameWorkspace(session string, wsID int, newName string) error
+	RenameSession(oldName, newName string) error
 	SetAgentStatus(paneID, state, badge string) error
 }
 
@@ -208,6 +210,83 @@ func (b *SocketDaemonBridge) ClosePane(paneID string) error {
 	}
 
 	return fmt.Errorf("timeout waiting for close_pane_res")
+}
+
+func (b *SocketDaemonBridge) RenameWorkspace(session string, wsID int, newName string) error {
+	conn, reader, err := b.dial()
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	reqData, _ := json.Marshal(protocol.RenameWorkspaceRequest{
+		SessionName: session,
+		WorkspaceID: wsID,
+		NewName:     newName,
+	})
+	if err := protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type:    protocol.MsgRenameWorkspace,
+		Payload: reqData,
+	}); err != nil {
+		return err
+	}
+
+	for i := 0; i < 10; i++ {
+		env, err := reader.Read()
+		if err != nil {
+			return err
+		}
+		if env.Type == protocol.MsgRenameWorkspaceRes {
+			var res protocol.RenameWorkspaceResponse
+			if err := json.Unmarshal(env.Payload, &res); err != nil {
+				return err
+			}
+			if !res.Success {
+				return fmt.Errorf("rename workspace failed: %s", res.Error)
+			}
+			return nil
+		}
+	}
+
+	return fmt.Errorf("timeout waiting for rename_workspace_res")
+}
+
+func (b *SocketDaemonBridge) RenameSession(oldName, newName string) error {
+	conn, reader, err := b.dial()
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	reqData, _ := json.Marshal(protocol.RenameSessionRequest{
+		OldName: oldName,
+		NewName: newName,
+	})
+	if err := protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type:    protocol.MsgRenameSession,
+		Payload: reqData,
+	}); err != nil {
+		return err
+	}
+
+	for i := 0; i < 10; i++ {
+		env, err := reader.Read()
+		if err != nil {
+			return err
+		}
+		if env.Type == protocol.MsgRenameSessionRes {
+			var res protocol.RenameSessionResponse
+			if err := json.Unmarshal(env.Payload, &res); err != nil {
+				return err
+			}
+			if !res.Success {
+				return fmt.Errorf("rename session failed: %s", res.Error)
+			}
+			return nil
+		}
+	}
+
+	return fmt.Errorf("timeout waiting for rename_session_res")
 }
 
 func (b *SocketDaemonBridge) SetAgentStatus(paneID, state, badge string) error {
