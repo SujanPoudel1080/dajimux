@@ -25,6 +25,7 @@ type Session struct {
 	Rows        int
 	Config      *config.Config
 	paneCounter int
+	isClosed    bool
 	OnStateChange func(state protocol.LayoutStatePayload)
 }
 
@@ -61,8 +62,10 @@ func NewSessionWithConfig(name string, cols, rows int, cfg *config.Config, onSta
 	s.Broker = agent.NewBroker(func(status *agent.PaneStatus) {
 		s.mu.Lock()
 		if pane, ok := s.Panes[status.PaneID]; ok {
+			pane.mu.Lock()
 			pane.AgentState = status.State
 			pane.AgentBadge = status.Badge
+			pane.mu.Unlock()
 		}
 		s.mu.Unlock()
 		s.NotifyState()
@@ -116,6 +119,8 @@ func (s *Session) nextPaneID() string {
 
 // ActiveWorkspace returns the currently selected workspace.
 func (s *Session) ActiveWorkspace() *Workspace {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.Workspaces[s.ActiveWS]
 }
 
@@ -271,18 +276,49 @@ func (s *Session) CloseActive() error {
 	return s.ClosePaneByID(activeID)
 }
 
+// GetPane returns the pane with paneID under read lock, or nil if not found.
+func (s *Session) GetPane(paneID string) *Pane {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Panes[paneID]
+}
+
+// Close terminates all panes in the session and marks it as closed.
+func (s *Session) Close() {
+	s.mu.Lock()
+	if s.isClosed {
+		s.mu.Unlock()
+		return
+	}
+	s.isClosed = true
+	panes := make([]*Pane, 0, len(s.Panes))
+	for _, p := range s.Panes {
+		panes = append(panes, p)
+	}
+	s.Panes = make(map[string]*Pane)
+	s.mu.Unlock()
+
+	for _, p := range panes {
+		_ = p.Close()
+	}
+}
+
 // ClosePaneByID terminates and removes a specific pane by its ID across any workspace.
 func (s *Session) ClosePaneByID(paneID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.isClosed {
+		return nil
+	}
 
 	pane, ok := s.Panes[paneID]
 	if !ok {
 		return nil
 	}
 
-	pane.Close()
 	delete(s.Panes, paneID)
+	_ = pane.Close()
 	s.Broker.RemovePane(paneID)
 
 	// Locate workspace holding this pane
@@ -311,7 +347,7 @@ func (s *Session) ClosePaneByID(paneID string) error {
 			if s.ActiveWS == targetWSID {
 				s.ActiveWS = 1
 			}
-		} else {
+		} else if !s.isClosed {
 			// Respawn single initial pane in ws 1
 			newID := s.nextPaneID()
 			newPane := s.createPane(newID, "shell")
@@ -328,7 +364,9 @@ func (s *Session) ClosePaneByID(paneID string) error {
 	targetWS.Layout(s.Cols, s.Rows)
 	s.syncPaneSizes(targetWS)
 
-	go s.NotifyState()
+	if !s.isClosed {
+		go s.NotifyState()
+	}
 	return nil
 }
 
@@ -628,16 +666,21 @@ func (s *Session) GetLayoutState() protocol.LayoutStatePayload {
 		node := ws.Tree.FindNode(pid)
 		pane := s.Panes[pid]
 		if node != nil && pane != nil {
+			pane.mu.RLock()
+			pTitle := pane.Title
+			pState := pane.AgentState
+			pBadge := pane.AgentBadge
+			pane.mu.RUnlock()
 			info := protocol.PaneInfo{
 				ID:         pid,
-				Title:      pane.Title,
+				Title:      pTitle,
 				X:          node.Rect.X,
 				Y:          node.Rect.Y,
 				W:          node.Rect.W,
 				H:          node.Rect.H,
 				IsActive:   pid == ws.ActivePaneID(),
-				AgentState: pane.AgentState,
-				AgentBadge: pane.AgentBadge,
+				AgentState: pState,
+				AgentBadge: pBadge,
 			}
 			panes = append(panes, info)
 		}
@@ -752,8 +795,10 @@ func RestoreSessionFromSerializedWithConfig(ss *state.SerializedSession, cols, r
 	s.Broker = agent.NewBroker(func(status *agent.PaneStatus) {
 		s.mu.Lock()
 		if pane, ok := s.Panes[status.PaneID]; ok {
+			pane.mu.Lock()
 			pane.AgentState = status.State
 			pane.AgentBadge = status.Badge
+			pane.mu.Unlock()
 		}
 		s.mu.Unlock()
 		s.NotifyState()
