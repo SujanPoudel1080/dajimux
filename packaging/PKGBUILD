@@ -1,6 +1,6 @@
 # Maintainer: Sujan Poudel <sujanpoudel1080@gmail.com>
 pkgname=dajimux
-pkgver=0.1.5
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Modern terminal multiplexer & agent mesh with Vim-modal ergonomics and BSP tiling"
 arch=('x86_64' 'aarch64')
