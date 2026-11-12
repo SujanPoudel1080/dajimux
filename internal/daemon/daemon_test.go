@@ -89,12 +89,22 @@ func TestDaemonLifecycleAndSession(t *testing.T) {
 	// Allow broker callback to update
 	time.Sleep(50 * time.Millisecond)
 
+	d.mu.RLock()
 	sess := d.Sessions["test-session"]
+	d.mu.RUnlock()
 	if sess == nil {
 		t.Fatalf("session not found in daemon")
 	}
+	sess.mu.RLock()
 	pane := sess.Panes[state.ActivePaneID]
-	if pane == nil || pane.AgentBadge != "🤖 Generating tests" {
+	var badge string
+	if pane != nil {
+		pane.mu.RLock()
+		badge = pane.AgentBadge
+		pane.mu.RUnlock()
+	}
+	sess.mu.RUnlock()
+	if pane == nil || badge != "🤖 Generating tests" {
 		t.Errorf("expected agent badge to be updated")
 	}
 
@@ -396,14 +406,18 @@ func TestAutoPaneCleanupOnExit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create session: %v", err)
 	}
+	defer sess.Close()
 
 	p2, err := sess.SplitActive(bsp.SplitVertical)
 	if err != nil {
 		t.Fatalf("failed to split: %v", err)
 	}
 
-	if len(sess.Panes) != 2 {
-		t.Fatalf("expected 2 panes, got %d", len(sess.Panes))
+	sess.mu.RLock()
+	panesLen := len(sess.Panes)
+	sess.mu.RUnlock()
+	if panesLen != 2 {
+		t.Fatalf("expected 2 panes, got %d", panesLen)
 	}
 
 	// Terminate p2's process to simulate shell exiting ('exit' or Ctrl+D)
@@ -589,9 +603,14 @@ func TestDaemonRenameSessionAndWorkspace(t *testing.T) {
 	}
 
 	// Verify workspace name
+	d.mu.RLock()
 	sess := d.Sessions["orig-name"]
-	if sess.Workspaces[1].Name != "frontend" {
-		t.Errorf("expected workspace name 'frontend', got %q", sess.Workspaces[1].Name)
+	d.mu.RUnlock()
+	sess.mu.RLock()
+	wsName := sess.Workspaces[1].Name
+	sess.mu.RUnlock()
+	if wsName != "frontend" {
+		t.Errorf("expected workspace name 'frontend', got %q", wsName)
 	}
 
 	// Test MsgRenameSession

@@ -144,7 +144,15 @@ func (p *Pane) readLoop() {
 	lineBuf := strings.Builder{}
 
 	for {
-		n, err := p.PTY.Read(buf)
+		p.mu.RLock()
+		closed := p.isClosed
+		ptmx := p.PTY
+		p.mu.RUnlock()
+		if closed || ptmx == nil {
+			break
+		}
+
+		n, err := ptmx.Read(buf)
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
@@ -260,7 +268,7 @@ func (p *Pane) Resize(cols, rows int) error {
 	p.Bounds.W = cols
 	p.Bounds.H = rows
 
-	if p.PTY == nil {
+	if p.isClosed || p.PTY == nil {
 		return nil
 	}
 	return pty.Setsize(p.PTY, &pty.Winsize{
