@@ -48,6 +48,7 @@ type Client struct {
 	prevPaletteH     int
 	lastRenderedCols int
 	lastRenderedRows int
+	compositors      map[string]*ANSICompositor
 }
 
 // NewClient initializes a client for the target session.
@@ -76,6 +77,7 @@ func NewClientWithConfig(socketPath, sessionName string, cfg *config.Config) *Cl
 		Config:       cfg,
 		inputHandler: handler,
 		palette:      NewPalette(),
+		compositors:  make(map[string]*ANSICompositor),
 	}
 }
 
@@ -185,8 +187,14 @@ func (c *Client) readDaemonLoop() {
 		case protocol.MsgFrameUpdate:
 			var frame protocol.FrameUpdatePayload
 			if err := json.Unmarshal(env.Payload, &frame); err == nil {
-				rewritten := c.rewriteFrame(frame.ANSI)
-				os.Stdout.Write(rewritten)
+				paneID := env.PaneID
+				if paneID == "" {
+					paneID = frame.PaneID
+				}
+				rewritten := c.rewriteFrameForPane(paneID, frame.ANSI)
+				if len(rewritten) > 0 {
+					os.Stdout.Write(rewritten)
+				}
 			}
 		case protocol.MsgLayoutState:
 			var state protocol.LayoutStatePayload
@@ -212,31 +220,80 @@ func (c *Client) readDaemonLoop() {
 	}
 }
 
-// rewriteFrame rewrites PTY output through the ANSI compositor so cursor
-// moves from the pane shell land inside the pane's viewport on the screen.
-func (c *Client) rewriteFrame(ansi []byte) []byte {
+// rewriteFrameForPane rewrites PTY output through the ANSI compositor so cursor
+// moves and text from the pane shell land strictly within that pane's viewport.
+func (c *Client) rewriteFrameForPane(paneID string, ansi []byte) []byte {
 	c.mu.Lock()
-	state := c.lastState
-	rows := c.rows
-	c.mu.Unlock()
+	defer c.mu.Unlock()
 
-	// Find active pane bounds
-	offX, offY, w, h := 1, 2, 80, rows-2
-	for _, p := range state.Panes {
-		if p.IsActive {
-			offX = p.X + 1 // BSP rect is 0-based, terminal is 1-based
-			offY = p.Y + 1 // p.Y already starts at 1 (row 0 is header), so +1 gives 1-based terminal row
-			w = p.W
-			h = p.H
+	state := c.lastState
+	cols := c.cols
+	rows := c.rows
+
+	hasBorders := len(state.Panes) > 1 && !state.IsMonocle
+
+	// Locate target pane by ID, fallback to active pane
+	var target *protocol.PaneInfo
+	for i := range state.Panes {
+		if state.Panes[i].ID == paneID {
+			target = &state.Panes[i]
 			break
 		}
+	}
+	if target == nil {
+		for i := range state.Panes {
+			if state.Panes[i].IsActive {
+				target = &state.Panes[i]
+				break
+			}
+		}
+	}
+
+	// In monocle mode, do not render frames for inactive/hidden background panes
+	if state.IsMonocle && target != nil && !target.IsActive {
+		return nil
+	}
+
+	offX, offY, w, h := 1, 2, cols, rows-2
+	targetKey := "default"
+	if target != nil {
+		targetKey = target.ID
+		if hasBorders {
+			offX = target.X + 2
+			offY = target.Y + 2
+			w = target.W - 2
+			h = target.H - 2
+		} else {
+			offX = target.X + 1
+			offY = target.Y + 1
+			w = target.W
+			h = target.H
+		}
+	}
+	if w < 1 {
+		w = 1
 	}
 	if h < 1 {
 		h = 1
 	}
 
-	comp := NewANSICompositor(offX, offY, w, h)
+	if c.compositors == nil {
+		c.compositors = make(map[string]*ANSICompositor)
+	}
+
+	comp, ok := c.compositors[targetKey]
+	if !ok || comp == nil {
+		comp = NewANSICompositor(offX, offY, w, h)
+		c.compositors[targetKey] = comp
+	} else {
+		comp.UpdateBounds(offX, offY, w, h)
+	}
+
 	return comp.Rewrite(ansi)
+}
+
+func (c *Client) rewriteFrame(ansi []byte) []byte {
+	return c.rewriteFrameForPane("", ansi)
 }
 
 func (c *Client) readStdinLoop() error {
@@ -260,11 +317,16 @@ func (c *Client) readStdinLoop() error {
 
 		res := c.inputHandler.HandleKey(buf[:n])
 
+		c.mu.Lock()
+		activePaneID := c.lastState.ActivePaneID
+		c.mu.Unlock()
+
 		// Send undo bytes if required (e.g. backspace after double-tap space)
 		if len(res.UndoBytes) > 0 {
 			ip, _ := json.Marshal(protocol.InputPayload{Data: res.UndoBytes})
 			_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
 				Type:    protocol.MsgInput,
+				PaneID:  activePaneID,
 				Payload: ip,
 			})
 		}
@@ -274,6 +336,7 @@ func (c *Client) readStdinLoop() error {
 			ip, _ := json.Marshal(protocol.InputPayload{Data: res.RawForward})
 			_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
 				Type:    protocol.MsgInput,
+				PaneID:  activePaneID,
 				Payload: ip,
 			})
 		}
@@ -290,6 +353,7 @@ func (c *Client) readStdinLoop() error {
 			ip, _ := json.Marshal(protocol.InputPayload{Data: res.RawForward})
 			_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
 				Type:    protocol.MsgInput,
+				PaneID:  activePaneID,
 				Payload: ip,
 			})
 
@@ -666,6 +730,14 @@ func (c *Client) handleMouseEvent(evt *MouseEvent) {
 		for _, p := range state.Panes {
 			if evt.X >= p.X+1 && evt.X <= p.X+p.W && evt.Y >= p.Y+1 && evt.Y <= p.Y+p.H {
 				if !p.IsActive {
+					c.mu.Lock()
+					c.lastState.ActivePaneID = p.ID
+					for i := range c.lastState.Panes {
+						c.lastState.Panes[i].IsActive = (c.lastState.Panes[i].ID == p.ID)
+					}
+					newState := c.lastState
+					c.mu.Unlock()
+					c.renderChrome(newState)
 					c.sendAction("focus_pane", map[string]string{
 						"pane_id": p.ID,
 					})
@@ -902,10 +974,16 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	// Position cursor inside active pane viewport
 	activeY := 2
 	activeX := 1
+	hasBorders := len(state.Panes) > 1 && !state.IsMonocle
 	for _, p := range state.Panes {
 		if p.IsActive {
-			activeY = p.Y + 1
-			activeX = p.X + 1
+			if hasBorders {
+				activeY = p.Y + 2
+				activeX = p.X + 2
+			} else {
+				activeY = p.Y + 1
+				activeX = p.X + 1
+			}
 			break
 		}
 	}

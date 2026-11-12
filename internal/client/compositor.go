@@ -6,26 +6,29 @@ import (
 	"strconv"
 )
 
-// ANSICompositor rewrites absolute cursor-positioning ANSI sequences emitted by
-// a pane's PTY so that they land in the correct place on the shared terminal
-// screen, accounting for the pane's origin (offX, offY) and size (w, h) and
-// the chrome rows reserved at the top and bottom.
+// ANSICompositor rewrites absolute cursor-positioning ANSI sequences and control
+// characters emitted by a pane's PTY so that output stays strictly within the
+// pane's viewport on the shared terminal screen.
 //
-// Rules applied (CSI = \033[):
-//   - CSI H / CSI f / CSI <r>;<c>H / CSI <r>;<c>f  → clamp+offset row/col
-//   - CSI <n>A / CSI <n>B / CSI <n>C / CSI <n>D    → pass through unchanged
-//     (relative moves are fine; the cursor stays inside the pane naturally)
-//   - CSI 2J / CSI J  → replace with "erase pane viewport" instead of full-screen erase
-//   - \033[?1049h / \033[?1049l (alt-screen enter/leave)              → drop
-//   - \033[<r>r (set scrolling margins)                               → drop
-//   - Everything else passes through unchanged.
+// In particular:
+//   - \r and \r\n are rewritten to jump to the pane's left column (offX), NOT
+//     col 1 of the physical terminal (which would spill into the left pane).
+//   - CSI H / CSI f (Cursor Position) are clamped and offset to (offX, offY).
+//   - CSI G (CHA) is offset so col 1 lands at offX.
+//   - CSI d (VPA) is offset so row 1 lands at offY.
+//   - CSI K (Erase Line) uses CSI X (ECH) limited to the pane's width so it
+//     never wipes across split borders into neighbor panes.
+//   - Printable characters autowrap at the pane's inner width (w).
+//   - CSI 2J / CSI J erases only the pane's viewport.
+//   - Alt-screen enter/leave and scroll margins are suppressed.
 type ANSICompositor struct {
 	offX, offY int // pane origin in terminal coordinates (1-based)
-	w, h       int // pane inner dimensions (excludes chrome)
+	w, h       int // pane inner dimensions (excludes chrome/borders)
+	curCol     int // 1-based relative to pane (1..w)
+	curRow     int // 1-based relative to pane (1..h)
 }
 
-// NewANSICompositor creates a compositor for a pane placed at (offX,offY) with (w,h).
-// offY should be 2 (first row below the top status bar); offX is 1 for the leftmost pane.
+// NewANSICompositor creates a compositor for a pane placed at (offX, offY) with (w, h).
 func NewANSICompositor(offX, offY, w, h int) *ANSICompositor {
 	if offX < 1 {
 		offX = 1
@@ -39,29 +42,99 @@ func NewANSICompositor(offX, offY, w, h int) *ANSICompositor {
 	if h < 1 {
 		h = 1
 	}
-	return &ANSICompositor{offX: offX, offY: offY, w: w, h: h}
+	return &ANSICompositor{
+		offX:   offX,
+		offY:   offY,
+		w:      w,
+		h:      h,
+		curCol: 1,
+		curRow: 1,
+	}
 }
 
-// Rewrite processes raw PTY output and returns a version safe to write directly
-// to the shared host terminal.
+// Rewrite processes raw PTY output and returns a version that is strictly
+// confined to this pane's rectangular screen region.
 func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 	if len(input) == 0 {
 		return input
 	}
 
-	out := make([]byte, 0, len(input)+32)
+	out := make([]byte, 0, len(input)+64)
 	i := 0
 
 	for i < len(input) {
 		b := input[i]
 
+		// 1. Carriage Return & Newline Handling
+		// In a pane at offX, \r must return to offX, NEVER col 1 of the physical terminal.
+		if b == '\r' {
+			if i+1 < len(input) && input[i+1] == '\n' {
+				// \r\n sequence: advance row and position at offX
+				ac.curRow = clamp(ac.curRow+1, 1, ac.h)
+				ac.curCol = 1
+				out = append(out, fmt.Sprintf("\n\033[%dG", ac.offX)...)
+				i += 2
+				continue
+			}
+			// Standalone \r: reset to offX on current row
+			ac.curCol = 1
+			out = append(out, fmt.Sprintf("\033[%dG", ac.offX)...)
+			i++
+			continue
+		}
+
+		if b == '\n' {
+			// Standalone \n: advance row and position at offX
+			ac.curRow = clamp(ac.curRow+1, 1, ac.h)
+			ac.curCol = 1
+			out = append(out, fmt.Sprintf("\n\033[%dG", ac.offX)...)
+			i++
+			continue
+		}
+
+		// 2. Backspace Handling: prevent backspacing past pane's left edge
+		if b == '\b' {
+			if ac.curCol > 1 {
+				ac.curCol--
+				out = append(out, '\b')
+			}
+			i++
+			continue
+		}
+
+		// 3. Tab Handling: advance to next 8-col tab stop within pane
+		if b == '\t' {
+			targetCol := ((ac.curCol-1)/8 + 1)*8 + 1
+			if targetCol > ac.w {
+				targetCol = ac.w
+			}
+			spaces := targetCol - ac.curCol
+			for s := 0; s < spaces; s++ {
+				out = append(out, ' ')
+				ac.curCol++
+			}
+			i++
+			continue
+		}
+
+		// 4. Regular Printable Characters (non-escape)
 		if b != 0x1b {
+			// Track column advancement for ASCII and UTF-8 leading bytes
+			if b < 0x80 || b >= 0xC0 {
+				if ac.curCol > ac.w {
+					// Autowrap to next line inside pane boundaries
+					ac.curRow = clamp(ac.curRow+1, 1, ac.h)
+					ac.curCol = 1
+					out = append(out, fmt.Sprintf("\n\033[%dG", ac.offX)...)
+				}
+				ac.curCol++
+			}
 			out = append(out, b)
 			i++
 			continue
 		}
 
-		// ESC sequence
+		// 5. ESC Sequence Processing
 		if i+1 >= len(input) {
 			out = append(out, b)
 			i++
@@ -72,13 +145,12 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 
 		switch next {
 		case '[': // CSI sequences
-			// Find the end of the CSI sequence (terminates on a letter)
+			// Find sequence terminator (letter or byte between 0x40 and 0x7E)
 			j := i + 2
-			for j < len(input) && (input[j] == ';' || input[j] == '?' || (input[j] >= '0' && input[j] <= '9')) {
+			for j < len(input) && (input[j] == ';' || input[j] == '?' || input[j] == ' ' || (input[j] >= '0' && input[j] <= '9')) {
 				j++
 			}
 			if j >= len(input) {
-				// Incomplete sequence — pass through as-is
 				out = append(out, input[i:]...)
 				i = len(input)
 				continue
@@ -91,41 +163,105 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 			switch finalByte {
 			case 'H', 'f': // Cursor Position: CSI <r>;<c>H
 				row, col := parseCursorPos(params)
-				// Offset into pane viewport
-				row = clamp(row+ac.offY-1, ac.offY, ac.offY+ac.h-1)
-				col = clamp(col+ac.offX-1, ac.offX, ac.offX+ac.w-1)
-				out = append(out, fmt.Sprintf("\033[%d;%dH", row, col)...)
+				ac.curRow = clamp(row, 1, ac.h)
+				ac.curCol = clamp(col, 1, ac.w)
+				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
+
+			case 'G': // Cursor Horizontal Absolute: CSI <c>G
+				col := 1
+				if params != "" {
+					if n, err := strconv.Atoi(params); err == nil && n > 0 {
+						col = n
+					}
+				}
+				ac.curCol = clamp(col, 1, ac.w)
+				out = append(out, fmt.Sprintf("\033[%dG", ac.curCol+ac.offX-1)...)
+
+			case 'd': // Cursor Vertical Absolute: CSI <r>d
+				row := 1
+				if params != "" {
+					if n, err := strconv.Atoi(params); err == nil && n > 0 {
+						row = n
+					}
+				}
+				ac.curRow = clamp(row, 1, ac.h)
+				out = append(out, fmt.Sprintf("\033[%dd", ac.curRow+ac.offY-1)...)
+
+			case 'A': // Cursor Up: CSI <n>A
+				n := parseCount(params)
+				ac.curRow = clamp(ac.curRow-n, 1, ac.h)
+				out = append(out, input[i:i+seqLen]...)
+
+			case 'B': // Cursor Down: CSI <n>B
+				n := parseCount(params)
+				ac.curRow = clamp(ac.curRow+n, 1, ac.h)
+				out = append(out, input[i:i+seqLen]...)
+
+			case 'C': // Cursor Forward: CSI <n>C
+				n := parseCount(params)
+				ac.curCol = clamp(ac.curCol+n, 1, ac.w)
+				out = append(out, input[i:i+seqLen]...)
+
+			case 'D': // Cursor Backward: CSI <n>D
+				n := parseCount(params)
+				ac.curCol = clamp(ac.curCol-n, 1, ac.w)
+				out = append(out, input[i:i+seqLen]...)
+
+			case 'K': // Erase in Line: CSI <n>K
+				// Standard \033[K erases all the way to the right edge of the physical
+				// screen, destroying neighbor panes! Replace with ECH (\033[X) scoped
+				// strictly to this pane's remaining width.
+				if params == "" || params == "0" {
+					// Erase from cursor to end of pane line
+					rem := ac.w - ac.curCol + 1
+					if rem > 0 {
+						out = append(out, fmt.Sprintf("\033[%dX", rem)...)
+					}
+				} else if params == "1" {
+					// Erase from start of pane line to cursor
+					out = append(out, fmt.Sprintf("\033[%dG\033[%dX\033[%dG", ac.offX, ac.curCol, ac.offX+ac.curCol-1)...)
+				} else if params == "2" {
+					// Erase entire line within pane
+					out = append(out, fmt.Sprintf("\033[%dG\033[%dX\033[%dG", ac.offX, ac.w, ac.offX+ac.curCol-1)...)
+				}
+
+			case 'X': // Erase Character: CSI <n>X
+				n := parseCount(params)
+				rem := ac.w - ac.curCol + 1
+				if n > rem {
+					n = rem
+				}
+				if n > 0 {
+					out = append(out, fmt.Sprintf("\033[%dX", n)...)
+				}
 
 			case 'J': // Erase in Display
-				// Replace CSI 2J (erase whole screen) with erase of pane viewport
 				if params == "2" || params == "" {
 					out = append(out, ac.erasePaneViewport()...)
+					ac.curRow = 1
+					ac.curCol = 1
 				} else {
 					out = append(out, input[i:i+seqLen]...)
 				}
 
-			case 'r': // Set scrolling region — drop; we own scrolling margins globally
+			case 'r': // Set scrolling region — drop (we manage viewport globally)
 				// discard
 
 			case 'h', 'l': // DEC private mode set/reset
-				if bytes.HasPrefix([]byte(params), []byte("?1049")) {
-					// Alternate screen buffer: drop — we already manage this
-				} else if bytes.HasPrefix([]byte(params), []byte("?47")) {
-					// drop alternate screen
+				if bytes.HasPrefix([]byte(params), []byte("?1049")) || bytes.HasPrefix([]byte(params), []byte("?47")) {
+					// Alternate screen buffer: drop
 				} else {
 					out = append(out, input[i:i+seqLen]...)
 				}
 
 			default:
-				// Pass all other CSI sequences through unchanged (colors, attributes,
-				// relative moves A/B/C/D, cursor show/hide, etc.)
+				// Pass all other CSI sequences through unchanged (SGR colors, cursor show/hide, etc.)
 				out = append(out, input[i:i+seqLen]...)
 			}
 
 			i += seqLen
 
-		case ']': // OSC sequences — pass through (OSC 52 clipboard, OSC 0 title, etc.)
-			// Find ST (BEL \a or ESC \)
+		case ']': // OSC sequences (clipboard, titles) — pass through
 			j := i + 2
 			for j < len(input) {
 				if input[j] == '\a' {
@@ -153,14 +289,13 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 			out = append(out, input[i:j]...)
 			i = j
 
-		case '7', '8': // DECSC / DECRC save/restore cursor — drop (we manage cursor)
+		case '7', '8': // DECSC / DECRC save/restore cursor — drop
 			i += 2
 
 		case 'c': // Full terminal reset — drop
 			i += 2
 
 		default:
-			// Unknown escape — pass through
 			out = append(out, b)
 			i++
 		}
@@ -179,6 +314,28 @@ func (ac *ANSICompositor) erasePaneViewport() []byte {
 	return b.Bytes()
 }
 
+// UpdateBounds updates the pane offset and dimensions while clamping cursor tracking.
+func (ac *ANSICompositor) UpdateBounds(offX, offY, w, h int) {
+	if offX < 1 {
+		offX = 1
+	}
+	if offY < 1 {
+		offY = 1
+	}
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	ac.offX = offX
+	ac.offY = offY
+	ac.w = w
+	ac.h = h
+	ac.curCol = clamp(ac.curCol, 1, ac.w)
+	ac.curRow = clamp(ac.curRow, 1, ac.h)
+}
+
 // parseCursorPos parses "row;col" or empty string (→ 1,1) from a CSI H/f param.
 func parseCursorPos(params string) (row, col int) {
 	row, col = 1, 1
@@ -187,7 +344,7 @@ func parseCursorPos(params string) (row, col int) {
 	}
 	semi := bytes.IndexByte([]byte(params), ';')
 	if semi < 0 {
-		if n, err := strconv.Atoi(params); err == nil {
+		if n, err := strconv.Atoi(params); err == nil && n > 0 {
 			row = n
 		}
 		return
@@ -199,6 +356,16 @@ func parseCursorPos(params string) (row, col int) {
 		col = n
 	}
 	return
+}
+
+func parseCount(params string) int {
+	if params == "" {
+		return 1
+	}
+	if n, err := strconv.Atoi(params); err == nil && n > 0 {
+		return n
+	}
+	return 1
 }
 
 func clamp(val, lo, hi int) int {

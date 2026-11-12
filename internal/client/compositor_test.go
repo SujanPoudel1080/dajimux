@@ -117,6 +117,53 @@ func TestANSICompositorOffsetPaneAt40(t *testing.T) {
 	}
 }
 
+func TestANSICompositorCarriageReturnAndNewlineInOffsetPane(t *testing.T) {
+	// Right-hand pane starting at col 42, row 2, size 38x20
+	comp := NewANSICompositor(42, 2, 38, 20)
+
+	// Standalone \r should move cursor to col 42, NOT col 1 of the terminal!
+	got := comp.Rewrite([]byte("hello\rworld"))
+	if bytes.Contains(got, []byte("\r")) {
+		t.Errorf("output should not contain raw \\r: got %q", got)
+	}
+	if !bytes.Contains(got, []byte("\033[42G")) {
+		t.Errorf("expected \\033[42G in output for \\r, got: %q", got)
+	}
+
+	// \r\n should emit newline followed by \033[42G so next line starts at col 42
+	comp2 := NewANSICompositor(42, 2, 38, 20)
+	got2 := comp2.Rewrite([]byte("ls\r\nDocuments\tDownloads\r\n"))
+	if bytes.Contains(got2, []byte("\r")) {
+		t.Errorf("output should not contain raw \\r: got %q", got2)
+	}
+	if !bytes.Contains(got2, []byte("\n\033[42G")) {
+		t.Errorf("expected \\n\\033[42G in output for \\r\\n, got: %q", got2)
+	}
+}
+
+func TestANSICompositorCSI_G_And_K(t *testing.T) {
+	// Right-hand pane starting at col 42, row 2, size 38x20
+	comp := NewANSICompositor(42, 2, 38, 20)
+
+	// \033[1G (move to col 1 in pane) should become \033[42G
+	got := comp.Rewrite([]byte("\033[1G"))
+	want := []byte("\033[42G")
+	if !bytes.Equal(got, want) {
+		t.Errorf("CSI G rewrite: got %q, want %q", got, want)
+	}
+
+	// \033[K (erase to end of line) should NOT emit raw \033[K (which wipes neighbor pane)
+	comp2 := NewANSICompositor(2, 2, 38, 20)
+	got2 := comp2.Rewrite([]byte("\033[K"))
+	if bytes.Contains(got2, []byte("\033[K")) {
+		t.Errorf("raw \\033[K should not be passed through: got %q", got2)
+	}
+	// At col 1 of 38-wide pane, it should erase remaining 38 chars: \033[38X
+	if !bytes.Contains(got2, []byte("\033[38X")) {
+		t.Errorf("expected \\033[38X in output for \\033[K, got: %q", got2)
+	}
+}
+
 func TestANSICompositorMixedOutput(t *testing.T) {
 	comp := NewANSICompositor(1, 2, 80, 22)
 

@@ -583,60 +583,128 @@ func (d *Daemon) getSessionForRequest(sessionID string) *Session {
 }
 
 func (d *Daemon) streamPaneOutput(writer *protocol.EnvelopeWriter, s *Session) {
-	outCh := make(chan []byte, 64)
-	var currentSubscribed *Pane
+	type paneUpdate struct {
+		paneID string
+		data   []byte
+	}
+
+	type paneSub struct {
+		ch   chan []byte
+		stop chan struct{}
+	}
+
+	updateCh := make(chan paneUpdate, 128)
+	subscribed := make(map[string]*paneSub)
 
 	subscribe := func(p *Pane) {
-		if currentSubscribed != nil {
-			currentSubscribed.RemoveListener(outCh)
+		if p == nil {
+			return
 		}
-		currentSubscribed = p
-		if p != nil {
-			p.AddListener(outCh)
-			// Immediately flush recent ANSI buffer so client sees shell prompt
-			history := p.GetRawBuffer()
-			if len(history) > 0 {
-				f := protocol.FrameUpdatePayload{ANSI: history}
-				payload, _ := json.Marshal(f)
-				_ = writer.Write(protocol.Envelope{
-					Type:    protocol.MsgFrameUpdate,
-					Payload: payload,
-				})
+		if _, exists := subscribed[p.ID]; exists {
+			return
+		}
+		subCh := make(chan []byte, 64)
+		stopCh := make(chan struct{})
+		subscribed[p.ID] = &paneSub{ch: subCh, stop: stopCh}
+		p.AddListener(subCh)
+
+		// Start background pump from pane listener into updateCh
+		go func(paneID string, ch <-chan []byte, stop <-chan struct{}) {
+			for {
+				select {
+				case <-stop:
+					return
+				case chunk, ok := <-ch:
+					if !ok {
+						return
+					}
+					select {
+					case updateCh <- paneUpdate{paneID: paneID, data: chunk}:
+					case <-stop:
+						return
+					}
+				}
 			}
+		}(p.ID, subCh, stopCh)
+
+		// Immediately flush recent ANSI buffer so client sees shell prompt/content
+		history := p.GetRawBuffer()
+		if len(history) > 0 {
+			f := protocol.FrameUpdatePayload{
+				PaneID: p.ID,
+				ANSI:   history,
+			}
+			payload, _ := json.Marshal(f)
+			_ = writer.Write(protocol.Envelope{
+				Type:    protocol.MsgFrameUpdate,
+				PaneID:  p.ID,
+				Payload: payload,
+			})
 		}
 	}
 
-	active := s.ActivePane()
-	subscribe(active)
+	unsubscribe := func(paneID string) {
+		sub, ok := subscribed[paneID]
+		if !ok {
+			return
+		}
+		delete(subscribed, paneID)
+		if p := s.GetPane(paneID); p != nil {
+			p.RemoveListener(sub.ch)
+		}
+		close(sub.stop)
+	}
+
+	// Initial subscription to all visible panes in active workspace
+	for _, p := range s.VisiblePanes() {
+		subscribe(p)
+	}
+
 	defer func() {
-		if currentSubscribed != nil {
-			currentSubscribed.RemoveListener(outCh)
+		for pid, sub := range subscribed {
+			if p := s.GetPane(pid); p != nil {
+				p.RemoveListener(sub.ch)
+			}
+			close(sub.stop)
 		}
 	}()
 
-	ticker := time.NewTicker(80 * time.Millisecond)
+	ticker := time.NewTicker(60 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case data, ok := <-outCh:
+		case update, ok := <-updateCh:
 			if !ok {
 				return
 			}
-			f := protocol.FrameUpdatePayload{ANSI: data}
+			f := protocol.FrameUpdatePayload{
+				PaneID: update.paneID,
+				ANSI:   update.data,
+			}
 			payload, _ := json.Marshal(f)
 			if err := writer.Write(protocol.Envelope{
 				Type:    protocol.MsgFrameUpdate,
+				PaneID:  update.paneID,
 				Payload: payload,
 			}); err != nil {
 				return
 			}
 
 		case <-ticker.C:
-			// Automatically track active pane switches (navigation, splits, workspaces)
-			curr := s.ActivePane()
-			if curr != currentSubscribed {
-				subscribe(curr)
+			// Automatically track visible pane changes (navigation, splits, closes, monocle, workspaces)
+			currentVisible := s.VisiblePanes()
+			visibleMap := make(map[string]*Pane, len(currentVisible))
+			for _, p := range currentVisible {
+				visibleMap[p.ID] = p
+				if _, ok := subscribed[p.ID]; !ok {
+					subscribe(p)
+				}
+			}
+			for pid := range subscribed {
+				if _, ok := visibleMap[pid]; !ok {
+					unsubscribe(pid)
+				}
 			}
 		}
 	}

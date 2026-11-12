@@ -136,6 +136,37 @@ func (s *Session) ActivePane() *Pane {
 	return s.Panes[activeID]
 }
 
+// VisiblePanes returns all leaf panes currently visible in the active workspace.
+// If monocle mode is active, it returns only the focused/monocle pane.
+func (s *Session) VisiblePanes() []*Pane {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ws := s.Workspaces[s.ActiveWS]
+	if ws == nil {
+		return nil
+	}
+
+	if ws.Tree != nil && ws.Tree.MonoclePaneID != "" {
+		if p, ok := s.Panes[ws.Tree.MonoclePaneID]; ok && p != nil {
+			return []*Pane{p}
+		}
+	}
+
+	if ws.Tree == nil {
+		return nil
+	}
+
+	leafIDs := ws.Tree.ListLeafPanes()
+	panes := make([]*Pane, 0, len(leafIDs))
+	for _, pid := range leafIDs {
+		if p, ok := s.Panes[pid]; ok && p != nil {
+			panes = append(panes, p)
+		}
+	}
+	return panes
+}
+
 // SplitActive splits the currently focused pane horizontally or vertically.
 func (s *Session) SplitActive(dir bsp.SplitDirection) (*Pane, error) {
 	s.mu.Lock()
@@ -165,9 +196,20 @@ func (s *Session) SplitActive(dir bsp.SplitDirection) (*Pane, error) {
 		fmt.Sprintf("DAJIMUX_WORKSPACE=%d", s.ActiveWS),
 	}
 
+	hasBorders := len(ws.Tree.ListLeafPanes()) > 1 && ws.Tree.MonoclePaneID == ""
 	w, h := 40, 12
 	if node != nil {
 		w, h = node.Rect.W, node.Rect.H
+		if hasBorders {
+			w -= 2
+			h -= 2
+		}
+	}
+	if w < 2 {
+		w = 2
+	}
+	if h < 2 {
+		h = 2
 	}
 
 	if err := newPane.Start(s.defaultShell(), w, h, env); err != nil {
@@ -234,9 +276,20 @@ func (s *Session) SpawnPane(dir bsp.SplitDirection, cwd string, initialCmd strin
 		fmt.Sprintf("DAJIMUX_WORKSPACE=%d", s.ActiveWS),
 	}
 
+	hasBorders := len(ws.Tree.ListLeafPanes()) > 1 && ws.Tree.MonoclePaneID == ""
 	w, h := 40, 12
 	if node != nil {
 		w, h = node.Rect.W, node.Rect.H
+		if hasBorders {
+			w -= 2
+			h -= 2
+		}
+	}
+	if w < 2 {
+		w = 2
+	}
+	if h < 2 {
+		h = 2
 	}
 
 	if err := newPane.StartWithCwd(s.defaultShell(), w, h, env, cwd); err != nil {
@@ -595,11 +648,24 @@ func (s *Session) ToggleMonocle() {
 }
 
 func (s *Session) syncPaneSizes(ws *Workspace) {
+	hasBorders := len(ws.Tree.ListLeafPanes()) > 1 && ws.Tree.MonoclePaneID == ""
 	for _, paneID := range ws.Tree.ListLeafPanes() {
 		node := ws.Tree.FindNode(paneID)
 		pane := s.Panes[paneID]
 		if node != nil && pane != nil {
-			_ = pane.Resize(node.Rect.W, node.Rect.H)
+			cols := node.Rect.W
+			rows := node.Rect.H
+			if hasBorders {
+				cols -= 2
+				rows -= 2
+			}
+			if cols < 2 {
+				cols = 2
+			}
+			if rows < 2 {
+				rows = 2
+			}
+			_ = pane.Resize(cols, rows)
 		}
 	}
 }

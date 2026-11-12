@@ -650,3 +650,90 @@ func TestDaemonRenameSessionAndWorkspace(t *testing.T) {
 		t.Errorf("expected session 'renamed-session' to exist")
 	}
 }
+
+func TestDaemonStreamPaneOutputMultiPaneIsolation(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dajimux-stream-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	t.Setenv("DAJIMUX_STATE_PATH", filepath.Join(tmpDir, "state.json"))
+
+	sockPath := filepath.Join(tmpDir, "stream.sock")
+	d := NewDaemon(sockPath)
+	if err := d.Start(); err != nil {
+		t.Fatalf("failed to start daemon: %v", err)
+	}
+	defer d.Stop()
+
+	go func() {
+		_ = d.AcceptLoop()
+	}()
+
+	sess, err := d.GetOrCreateSession("stream-isolation", 100, 30)
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	p2, err := sess.SplitActive(bsp.SplitVertical)
+	if err != nil {
+		t.Fatalf("failed to split: %v", err)
+	}
+
+	visible := sess.VisiblePanes()
+	if len(visible) != 2 {
+		t.Fatalf("expected 2 visible panes, got %d", len(visible))
+	}
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("failed to dial daemon: %v", err)
+	}
+	defer conn.Close()
+
+	reader := protocol.NewEnvelopeReader(conn)
+	attachPayload, _ := json.Marshal(protocol.AttachPayload{
+		SessionName: "stream-isolation",
+		Cols:        100,
+		Rows:        30,
+	})
+	if err := protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type:    protocol.MsgAttach,
+		Payload: attachPayload,
+	}); err != nil {
+		t.Fatalf("failed to attach: %v", err)
+	}
+
+	// Send explicit input to both panes to ensure both generate output immediately
+	p1 := visible[0]
+	_, _ = p1.Write([]byte("echo P1_READY\n"))
+	_, _ = p2.Write([]byte("echo P2_READY\n"))
+
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+
+	// Verify that MsgFrameUpdate messages include accurate PaneID
+	receivedPanes := make(map[string]bool)
+	for len(receivedPanes) < 2 {
+		env, err := reader.Read()
+		if err != nil {
+			t.Fatalf("timed out waiting for frames from both panes; received for: %+v, err: %v", receivedPanes, err)
+		}
+		if env.Type == protocol.MsgFrameUpdate {
+			if env.PaneID == "" {
+				t.Fatalf("expected non-empty PaneID on MsgFrameUpdate envelope")
+			}
+			var f protocol.FrameUpdatePayload
+			if err := json.Unmarshal(env.Payload, &f); err == nil {
+				if f.PaneID != env.PaneID {
+					t.Fatalf("envelope PaneID %q != payload PaneID %q", env.PaneID, f.PaneID)
+				}
+			}
+			receivedPanes[env.PaneID] = true
+		}
+	}
+
+	if !receivedPanes[p2.ID] {
+		t.Errorf("expected frame updates for p2 %s", p2.ID)
+	}
+}

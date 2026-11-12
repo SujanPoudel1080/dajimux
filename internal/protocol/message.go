@@ -128,7 +128,8 @@ type LayoutStatePayload struct {
 
 // FrameUpdatePayload transmits raw differential ANSI bytes to render on the client screen.
 type FrameUpdatePayload struct {
-	ANSI []byte `json:"ansi"`
+	PaneID string `json:"pane_id,omitempty"`
+	ANSI   []byte `json:"ansi"`
 }
 
 // AgentStatusPayload updates an agent's status indicator.
