@@ -4,7 +4,7 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/SujanPoudel1080/dajimux/main/install.sh | bash
 # Or with a specific version:
-#   curl -fsSL https://raw.githubusercontent.com/SujanPoudel1080/dajimux/main/install.sh | VERSION=v0.1.0 bash
+#   curl -fsSL https://raw.githubusercontent.com/SujanPoudel1080/dajimux/main/install.sh | VERSION=v0.2.1 bash
 # ==============================================================================
 
 set -euo pipefail
@@ -74,7 +74,7 @@ get_latest_version() {
     fi
 
     if [ -z "${latest:-}" ]; then
-        latest="v0.1.0"
+        latest="v0.2.1"
     fi
     echo "$latest"
 }
@@ -170,6 +170,13 @@ main() {
         rm -f "${TARGET_PATH}"
         cp "${TMP_DIR}/${BINARY_NAME}" "${TARGET_PATH}"
         chmod 755 "${TARGET_PATH}"
+    fi
+
+    # Terminate running background daemon if present so the updated binary takes effect
+    if "${TARGET_PATH}" stop >/dev/null 2>&1; then
+        log_info "Stopped existing ${BINARY_NAME} background daemon to apply update."
+    elif pgrep -f "${BINARY_NAME} daemon" >/dev/null 2>&1; then
+        pkill -f "${BINARY_NAME} daemon" 2>/dev/null || true
     fi
 
     # Check PATH

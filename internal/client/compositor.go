@@ -60,25 +60,30 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 	}
 
 	out := make([]byte, 0, len(input)+64)
-	i := 0
 
+	// Ensure cursor starts at the pane's tracked coordinates before printing non-escape data
+	if input[0] != 0x1b {
+		out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
+	}
+
+	i := 0
 	for i < len(input) {
 		b := input[i]
 
 		// 1. Carriage Return & Newline Handling
-		// In a pane at offX, \r must return to offX, NEVER col 1 of the physical terminal.
+		// In a pane at (offX, offY), \r and \n must be explicitly positioned inside the pane.
 		if b == '\r' {
 			if i+1 < len(input) && input[i+1] == '\n' {
 				// \r\n sequence: advance row and position at offX
 				ac.curRow = clamp(ac.curRow+1, 1, ac.h)
 				ac.curCol = 1
-				out = append(out, fmt.Sprintf("\n\033[%dG", ac.offX)...)
+				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.offX)...)
 				i += 2
 				continue
 			}
 			// Standalone \r: reset to offX on current row
 			ac.curCol = 1
-			out = append(out, fmt.Sprintf("\033[%dG", ac.offX)...)
+			out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.offX)...)
 			i++
 			continue
 		}
@@ -87,7 +92,7 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 			// Standalone \n: advance row and position at offX
 			ac.curRow = clamp(ac.curRow+1, 1, ac.h)
 			ac.curCol = 1
-			out = append(out, fmt.Sprintf("\n\033[%dG", ac.offX)...)
+			out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.offX)...)
 			i++
 			continue
 		}
@@ -125,7 +130,7 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 					// Autowrap to next line inside pane boundaries
 					ac.curRow = clamp(ac.curRow+1, 1, ac.h)
 					ac.curCol = 1
-					out = append(out, fmt.Sprintf("\n\033[%dG", ac.offX)...)
+					out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.offX)...)
 				}
 				ac.curCol++
 			}
@@ -175,7 +180,7 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 					}
 				}
 				ac.curCol = clamp(col, 1, ac.w)
-				out = append(out, fmt.Sprintf("\033[%dG", ac.curCol+ac.offX-1)...)
+				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
 
 			case 'd': // Cursor Vertical Absolute: CSI <r>d
 				row := 1
@@ -185,27 +190,27 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 					}
 				}
 				ac.curRow = clamp(row, 1, ac.h)
-				out = append(out, fmt.Sprintf("\033[%dd", ac.curRow+ac.offY-1)...)
+				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
 
-			case 'A': // Cursor Up: CSI <n>A
+			case 'A': // Cursor Up: CSI <n>A (clamped to pane top)
 				n := parseCount(params)
 				ac.curRow = clamp(ac.curRow-n, 1, ac.h)
-				out = append(out, input[i:i+seqLen]...)
+				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
 
-			case 'B': // Cursor Down: CSI <n>B
+			case 'B': // Cursor Down: CSI <n>B (clamped to pane bottom)
 				n := parseCount(params)
 				ac.curRow = clamp(ac.curRow+n, 1, ac.h)
-				out = append(out, input[i:i+seqLen]...)
+				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
 
-			case 'C': // Cursor Forward: CSI <n>C
+			case 'C': // Cursor Forward: CSI <n>C (clamped to pane right)
 				n := parseCount(params)
 				ac.curCol = clamp(ac.curCol+n, 1, ac.w)
-				out = append(out, input[i:i+seqLen]...)
+				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
 
-			case 'D': // Cursor Backward: CSI <n>D
+			case 'D': // Cursor Backward: CSI <n>D (clamped to pane left)
 				n := parseCount(params)
 				ac.curCol = clamp(ac.curCol-n, 1, ac.w)
-				out = append(out, input[i:i+seqLen]...)
+				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
 
 			case 'K': // Erase in Line: CSI <n>K
 				// Standard \033[K erases all the way to the right edge of the physical

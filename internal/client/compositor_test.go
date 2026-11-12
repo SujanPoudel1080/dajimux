@@ -65,14 +65,14 @@ func TestANSICompositorCursorOffset(t *testing.T) {
 			expect: []byte("\033[0;32;1m"),
 		},
 		{
-			name:   "relative move A passed through",
+			name:   "relative move A clamped to pane top",
 			input:  []byte("\033[3A"),
-			expect: []byte("\033[3A"),
+			expect: []byte("\033[2;1H"),
 		},
 		{
-			name:   "plain text passed through",
+			name:   "plain text prefixed with pane cursor position",
 			input:  []byte("hello world"),
-			expect: []byte("hello world"),
+			expect: []byte("\033[2;1Hhello world"),
 		},
 		{
 			name:   "OSC 0 title passed through",
@@ -121,23 +121,23 @@ func TestANSICompositorCarriageReturnAndNewlineInOffsetPane(t *testing.T) {
 	// Right-hand pane starting at col 42, row 2, size 38x20
 	comp := NewANSICompositor(42, 2, 38, 20)
 
-	// Standalone \r should move cursor to col 42, NOT col 1 of the terminal!
+	// Standalone \r should position cursor at row 2, col 42, NOT col 1 of the terminal!
 	got := comp.Rewrite([]byte("hello\rworld"))
 	if bytes.Contains(got, []byte("\r")) {
 		t.Errorf("output should not contain raw \\r: got %q", got)
 	}
-	if !bytes.Contains(got, []byte("\033[42G")) {
-		t.Errorf("expected \\033[42G in output for \\r, got: %q", got)
+	if !bytes.Contains(got, []byte("\033[2;42H")) {
+		t.Errorf("expected \\033[2;42H in output for \\r, got: %q", got)
 	}
 
-	// \r\n should emit newline followed by \033[42G so next line starts at col 42
+	// \r\n should advance to row 3 and position at col 42
 	comp2 := NewANSICompositor(42, 2, 38, 20)
 	got2 := comp2.Rewrite([]byte("ls\r\nDocuments\tDownloads\r\n"))
 	if bytes.Contains(got2, []byte("\r")) {
 		t.Errorf("output should not contain raw \\r: got %q", got2)
 	}
-	if !bytes.Contains(got2, []byte("\n\033[42G")) {
-		t.Errorf("expected \\n\\033[42G in output for \\r\\n, got: %q", got2)
+	if !bytes.Contains(got2, []byte("\033[3;42H")) {
+		t.Errorf("expected \\033[3;42H in output for \\r\\n, got: %q", got2)
 	}
 }
 
@@ -145,9 +145,9 @@ func TestANSICompositorCSI_G_And_K(t *testing.T) {
 	// Right-hand pane starting at col 42, row 2, size 38x20
 	comp := NewANSICompositor(42, 2, 38, 20)
 
-	// \033[1G (move to col 1 in pane) should become \033[42G
+	// \033[1G (move to col 1 in pane) should become explicit position at row 2, col 42
 	got := comp.Rewrite([]byte("\033[1G"))
-	want := []byte("\033[42G")
+	want := []byte("\033[2;42H")
 	if !bytes.Equal(got, want) {
 		t.Errorf("CSI G rewrite: got %q, want %q", got, want)
 	}

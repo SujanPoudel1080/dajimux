@@ -113,13 +113,10 @@ func (c *Client) RunWithConn(conn net.Conn) error {
 
 	c.isRunning = true
 
-	// Clear screen and enter alternate screen buffer
-	fmt.Print("\033[?1049h\033[H\033[2J")
+	// Clear screen and enter alternate screen buffer with full scroll margins
+	fmt.Print("\033[?1049h\033[H\033[2J\033[r")
 	if c.Config == nil || c.Config.General.MouseSupport {
 		fmt.Print("\033[?1000h\033[?1002h\033[?1006h")
-	}
-	if c.rows > 3 {
-		fmt.Printf("\033[2;%dr", c.rows-1)
 	}
 
 	// Send Attach Envelope
@@ -839,11 +836,8 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	b.WriteString("\0337")
 
 	if sizeChanged {
-		// Clear entire screen to remove stale pane borders, old footers, and overlays from previous sizes
-		b.WriteString("\033[H\033[2J")
-		if rows > 3 {
-			b.WriteString(fmt.Sprintf("\033[2;%dr", rows-1))
-		}
+		// Clear entire screen and reset margins to remove stale pane borders, old footers, and overlays from previous sizes
+		b.WriteString("\033[H\033[2J\033[r")
 	}
 
 	// 1. Draw Top Header (Workspaces & Mode)
