@@ -26,6 +26,7 @@ type Palette struct {
 // PaletteItemsForWorkspaces returns the built-in commands with workspace entries up to max(9, totalWS).
 func PaletteItemsForWorkspaces(totalWS int) []PaletteItem {
 	items := []PaletteItem{
+		{ID: "split_auto", Title: "Split Auto", Description: "Split active pane automatically by aspect ratio (e)", Action: ActionSplitAuto},
 		{ID: "split_v", Title: "Split Vertical", Description: "Split active pane vertically (left/right)", Action: ActionSplitVertical},
 		{ID: "split_h", Title: "Split Horizontal", Description: "Split active pane horizontally (top/bottom)", Action: ActionSplitHorizontal},
 		{ID: "swap_next", Title: "Swap with Next Pane", Description: "Swap position with next pane in workspace (w)", Action: ActionSwapNext},

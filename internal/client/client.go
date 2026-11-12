@@ -327,6 +327,8 @@ func (c *Client) readStdinLoop() error {
 			c.sendAction("split_h", nil)
 		case ActionSplitVertical:
 			c.sendAction("split_v", nil)
+		case ActionSplitAuto:
+			c.sendAction("split_auto", nil)
 		case ActionCycleLayout:
 			c.sendAction("cycle_layout", nil)
 		case ActionClosePane:
@@ -650,6 +652,12 @@ func (c *Client) handleMouseEvent(evt *MouseEvent) {
 				c.sendAction("switch_workspace", map[string]string{
 					"workspace": fmt.Sprintf("%d", wsNum),
 				})
+				return
+			}
+			// Clicking layout badge on the far right cycles the layout preset
+			if evt.X >= cols-12 {
+				c.sendAction("cycle_layout", nil)
+				return
 			}
 			return
 		}
@@ -671,6 +679,8 @@ func (c *Client) handleMouseEvent(evt *MouseEvent) {
 
 func (c *Client) executePaletteItem(item PaletteItem) {
 	switch item.Action {
+	case ActionSplitAuto:
+		c.sendAction("split_auto", nil)
 	case ActionSplitVertical:
 		c.sendAction("split_v", nil)
 	case ActionSplitHorizontal:
@@ -790,8 +800,12 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	b.WriteString(headerFg)
 
 	// Mode badge color
+	modeText := string(state.Mode)
 	modeColor := "\033[48;5;28m\033[38;5;255m" // Green for Insert
-	if state.Mode == protocol.ModeNormal {
+	if c.inputHandler != nil && c.inputHandler.InPrefix() {
+		modeText = "PREFIX"
+		modeColor = "\033[48;5;33m\033[38;5;255m\033[1m" // Bright Blue for Prefix awaiting command
+	} else if state.Mode == protocol.ModeNormal {
 		modeColor = "\033[48;5;166m\033[38;5;255m" // Orange for Normal
 	} else if state.Mode == protocol.ModeResize {
 		modeColor = "\033[48;5;160m\033[38;5;255m" // Red for Resize
@@ -802,9 +816,9 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 		wsNames[ws.ID] = ws.Name
 	}
 
-	headerPrefix := fmt.Sprintf("%s %s %s%s [dajimux:%s] ", modeColor, state.Mode, headerBg, headerFg, state.SessionName)
+	headerPrefix := fmt.Sprintf("%s %s %s%s [dajimux:%s] ", modeColor, modeText, headerBg, headerFg, state.SessionName)
 	b.WriteString(headerPrefix)
-	printedHeaderLen := len(state.Mode) + 2 + len(state.SessionName) + 12
+	printedHeaderLen := len(modeText) + 2 + len(state.SessionName) + 12
 
 	for i := 1; i <= 9; i++ {
 		name := wsNames[i]
@@ -864,7 +878,21 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 		}
 	}
 
-	footerText := fmt.Sprintf(" Space+Space: Normal | h/j/k/l: Nav | w: Swap | t: Layout | s/v: Split | m<1-9>: Move WS | x: Close%s", agentTelemetry)
+	leaderHint := "Space+Space: Normal"
+	if c.inputHandler != nil && c.inputHandler.PrefixMode == "prefix" {
+		switch c.inputHandler.LeaderKey {
+		case 0x02:
+			leaderHint = "^B: Prefix"
+		case 0x01:
+			leaderHint = "^A: Prefix"
+		case 0x00:
+			leaderHint = "^Space: Prefix"
+		default:
+			leaderHint = fmt.Sprintf("%c: Prefix", c.inputHandler.LeaderKey)
+		}
+	}
+
+	footerText := fmt.Sprintf(" %s | h/j/k/l: Nav | w: Swap | t: Layout | s/v/e: Split | m<1-9>: Move WS | x: Close%s", leaderHint, agentTelemetry)
 	b.WriteString(footerText)
 	if cols > len(footerText) {
 		b.WriteString(strings.Repeat(" ", cols-len(footerText)))

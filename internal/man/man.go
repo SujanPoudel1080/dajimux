@@ -73,6 +73,15 @@ Run the background multiplexer daemon process directly.
 \fBstop\fR, \fBkill-server\fR
 Gracefully stop the running background daemon and persist session state.
 .TP
+\fBkill-session\fR \fISESSION\fR
+Terminate a specific session and close all child processes.
+.TP
+\fBrename-session\fR \fIOLD_NAME\fR \fINEW_NAME\fR
+Rename an active session.
+.TP
+\fBsession\fR \fBrename\fR | \fBkill\fR | \fBlist\fR
+Manage sessions directly from the command line.
+.TP
 \fBrestore\fR [\fISESSION\fR]
 Restore session layout and working directories from persisted state.
 .TP
@@ -128,6 +137,9 @@ Split active pane horizontally (top / bottom).
 .TP
 \fBv\fR
 Split active pane vertically (left / right).
+.TP
+\fBe\fR
+Split active pane automatically (vertical if wide, horizontal if tall).
 .TP
 \fBm <1-9>\fR
 Move active pane directly to workspace 1 through 9.

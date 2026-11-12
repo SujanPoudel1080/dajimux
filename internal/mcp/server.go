@@ -244,6 +244,31 @@ func (s *Server) listTools() []Tool {
 			},
 		},
 		{
+			Name:        "rename_workspace",
+			Description: "Assign a custom display name to a workspace within a session.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]PropertyDef{
+					"session":   {Type: "string", Description: "Target session name (default active)"},
+					"workspace": {Type: "integer", Description: "Target workspace number (1-9, default active)"},
+					"name":      {Type: "string", Description: "New workspace display name (e.g. 'build', 'backend')"},
+				},
+				Required: []string{"name"},
+			},
+		},
+		{
+			Name:        "rename_session",
+			Description: "Rename an active dajimux session.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]PropertyDef{
+					"old_name": {Type: "string", Description: "Current session name"},
+					"new_name": {Type: "string", Description: "New session name"},
+				},
+				Required: []string{"old_name", "new_name"},
+			},
+		},
+		{
 			Name:        "set_agent_status",
 			Description: "Update the agent state and status badge displayed in a pane's header.",
 			InputSchema: InputSchema{
@@ -362,6 +387,45 @@ func (s *Server) callTool(name string, args json.RawMessage) (ToolCallResult, er
 		return ToolCallResult{
 			Content: []TextContent{
 				{Type: "text", Text: fmt.Sprintf("Pane %s closed successfully.", params.PaneID)},
+			},
+		}, nil
+
+	case "rename_workspace":
+		var params struct {
+			Session   string `json:"session"`
+			Workspace int    `json:"workspace"`
+			Name      string `json:"name"`
+		}
+		if err := json.Unmarshal(args, &params); err != nil || params.Name == "" {
+			return ToolCallResult{}, fmt.Errorf("name is required")
+		}
+
+		if err := s.Bridge.RenameWorkspace(params.Session, params.Workspace, params.Name); err != nil {
+			return ToolCallResult{}, err
+		}
+
+		return ToolCallResult{
+			Content: []TextContent{
+				{Type: "text", Text: fmt.Sprintf("Workspace renamed to %q successfully.", params.Name)},
+			},
+		}, nil
+
+	case "rename_session":
+		var params struct {
+			OldName string `json:"old_name"`
+			NewName string `json:"new_name"`
+		}
+		if err := json.Unmarshal(args, &params); err != nil || params.OldName == "" || params.NewName == "" {
+			return ToolCallResult{}, fmt.Errorf("old_name and new_name are required")
+		}
+
+		if err := s.Bridge.RenameSession(params.OldName, params.NewName); err != nil {
+			return ToolCallResult{}, err
+		}
+
+		return ToolCallResult{
+			Content: []TextContent{
+				{Type: "text", Text: fmt.Sprintf("Session %q renamed to %q successfully.", params.OldName, params.NewName)},
 			},
 		}, nil
 

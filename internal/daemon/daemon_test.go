@@ -530,3 +530,104 @@ func TestDaemonKillSessionAndClosePane(t *testing.T) {
 		t.Errorf("session 'kill-target' should have been destroyed after MsgKillSession")
 	}
 }
+
+func TestDaemonRenameSessionAndWorkspace(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dajimux-rename-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	sockPath := filepath.Join(tmpDir, "rename.sock")
+	d := NewDaemon(sockPath)
+	if err := d.Start(); err != nil {
+		t.Fatalf("failed to start daemon: %v", err)
+	}
+	defer d.Stop()
+
+	go func() {
+		_ = d.AcceptLoop()
+	}()
+
+	_, err = d.GetOrCreateSession("orig-name", 80, 24)
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	reader := protocol.NewEnvelopeReader(conn)
+
+	// Test MsgRenameWorkspace
+	wsReq, _ := json.Marshal(protocol.RenameWorkspaceRequest{
+		SessionName: "orig-name",
+		WorkspaceID: 1,
+		NewName:     "frontend",
+	})
+	_ = protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type:    protocol.MsgRenameWorkspace,
+		Payload: wsReq,
+	})
+
+	for {
+		env, err := reader.Read()
+		if err != nil {
+			t.Fatalf("read failed: %v", err)
+		}
+		if env.Type == protocol.MsgRenameWorkspaceRes {
+			var res protocol.RenameWorkspaceResponse
+			_ = json.Unmarshal(env.Payload, &res)
+			if !res.Success {
+				t.Fatalf("expected rename workspace success, got error: %s", res.Error)
+			}
+			break
+		}
+	}
+
+	// Verify workspace name
+	sess := d.Sessions["orig-name"]
+	if sess.Workspaces[1].Name != "frontend" {
+		t.Errorf("expected workspace name 'frontend', got %q", sess.Workspaces[1].Name)
+	}
+
+	// Test MsgRenameSession
+	sessReq, _ := json.Marshal(protocol.RenameSessionRequest{
+		OldName: "orig-name",
+		NewName: "renamed-session",
+	})
+	_ = protocol.WriteEnvelope(conn, protocol.Envelope{
+		Type:    protocol.MsgRenameSession,
+		Payload: sessReq,
+	})
+
+	for {
+		env, err := reader.Read()
+		if err != nil {
+			t.Fatalf("read failed: %v", err)
+		}
+		if env.Type == protocol.MsgRenameSessionRes {
+			var res protocol.RenameSessionResponse
+			_ = json.Unmarshal(env.Payload, &res)
+			if !res.Success {
+				t.Fatalf("expected rename session success, got error: %s", res.Error)
+			}
+			break
+		}
+	}
+
+	d.mu.RLock()
+	_, oldExists := d.Sessions["orig-name"]
+	newSess, newExists := d.Sessions["renamed-session"]
+	d.mu.RUnlock()
+
+	if oldExists {
+		t.Errorf("old session 'orig-name' should no longer exist")
+	}
+	if !newExists || newSess.Name != "renamed-session" {
+		t.Errorf("expected session 'renamed-session' to exist")
+	}
+}
