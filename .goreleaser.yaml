@@ -46,7 +46,10 @@ nfpms:
     formats:
       - deb
       - rpm
-    bindir: /usr/local/bin
+    bindir: /usr/bin
+    contents:
+      - src: man/dajimux.1
+        dst: /usr/share/man/man1/dajimux.1
 
 brews:
   - name: dajimux
