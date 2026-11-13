@@ -74,6 +74,9 @@ func DefaultConfigPath() string {
 	if envPath := os.Getenv("DAJIMUX_CONFIG"); envPath != "" {
 		return envPath
 	}
+	if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
+		return filepath.Join(xdgConfig, "dajimux", "config.yaml")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "config.yaml"
