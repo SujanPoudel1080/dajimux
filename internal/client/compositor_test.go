@@ -211,3 +211,50 @@ func TestANSICompositorMixedOutput(t *testing.T) {
 		t.Errorf("expected text preserved in output, got: %q", got)
 	}
 }
+
+func TestANSICompositorColorBeforePrintableText(t *testing.T) {
+	// Offset pane at (42, 3) (e.g. right pane with borders)
+	comp := NewANSICompositor(42, 3, 38, 20)
+
+	// Shell emits color escape sequence WITHOUT an explicit CSI H before text
+	input := []byte("\033[1;34mDocuments\033[0m")
+	got := comp.Rewrite(input)
+
+	// The compositor must guarantee cursor is placed at pane origin (row 3, col 42)
+	// before printing "Documents", not relying on previous terminal cursor!
+	if !bytes.Contains(got, []byte("\033[3;42H")) {
+		t.Fatalf("expected cursor positioning \033[3;42H before Documents, got: %q", got)
+	}
+	docIdx := bytes.Index(got, []byte("Documents"))
+	posIdx := bytes.Index(got, []byte("\033[3;42H"))
+	if posIdx > docIdx {
+		t.Fatalf("cursor positioning must occur BEFORE text output: pos=%d doc=%d in %q", posIdx, docIdx, got)
+	}
+}
+
+func TestANSICompositorLsOutputNotSpilling(t *testing.T) {
+	// Simulate left pane at (2, 3) and right pane at (42, 3)
+	leftComp := NewANSICompositor(2, 3, 38, 20)
+	rightComp := NewANSICompositor(42, 3, 38, 20)
+
+	// User types 'ls' in left pane; receives colorized dir listing
+	leftLs := leftComp.Rewrite([]byte("\033[0m\033[1;34mDesktop\033[0m\r\n\033[1;34mDownloads\033[0m\r\n"))
+	if !bytes.Contains(leftLs, []byte("\033[3;2H")) {
+		t.Errorf("left pane line 1 must start at (3, 2), got: %q", leftLs)
+	}
+	if !bytes.Contains(leftLs, []byte("\033[4;2H")) {
+		t.Errorf("left pane line 2 must start at (4, 2), got: %q", leftLs)
+	}
+
+	// User types 'ls' in right pane; must NEVER print at col 2 or row 2!
+	rightLs := rightComp.Rewrite([]byte("\033[0m\033[1;34mMusic\033[0m\r\n\033[1;34mVideos\033[0m\r\n"))
+	if bytes.Contains(rightLs, []byte("\033[3;2H")) || bytes.Contains(rightLs, []byte("\033[2;")) {
+		t.Errorf("right pane output leaked into left pane or border: %q", rightLs)
+	}
+	if !bytes.Contains(rightLs, []byte("\033[3;42H")) {
+		t.Errorf("right pane line 1 must start at (3, 42), got: %q", rightLs)
+	}
+	if !bytes.Contains(rightLs, []byte("\033[4;42H")) {
+		t.Errorf("right pane line 2 must start at (4, 42), got: %q", rightLs)
+	}
+}

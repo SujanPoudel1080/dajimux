@@ -61,9 +61,17 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 
 	out := make([]byte, 0, len(input)+64)
 
-	// Ensure cursor starts at the pane's tracked coordinates before printing non-escape data
-	if input[0] != 0x1b {
-		out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
+	// Track whether the terminal's hardware cursor is currently synchronized to
+	// (ac.curRow + ac.offY - 1, ac.curCol + ac.offX - 1). Because the physical
+	// screen is shared across multiple concurrent panes and status chrome, we must
+	// guarantee the cursor is positioned inside this pane before emitting printable
+	// characters or character erasures.
+	cursorSynchronized := false
+	ensureCursor := func() {
+		if !cursorSynchronized {
+			out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
+			cursorSynchronized = true
+		}
 	}
 
 	i := 0
@@ -78,12 +86,14 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 				ac.curRow = clamp(ac.curRow+1, 1, ac.h)
 				ac.curCol = 1
 				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.offX)...)
+				cursorSynchronized = true
 				i += 2
 				continue
 			}
 			// Standalone \r: reset to offX on current row
 			ac.curCol = 1
 			out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.offX)...)
+			cursorSynchronized = true
 			i++
 			continue
 		}
@@ -93,6 +103,7 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 			ac.curRow = clamp(ac.curRow+1, 1, ac.h)
 			ac.curCol = 1
 			out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.offX)...)
+			cursorSynchronized = true
 			i++
 			continue
 		}
@@ -101,6 +112,7 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 		if b == '\b' {
 			if ac.curCol > 1 {
 				ac.curCol--
+				ensureCursor()
 				out = append(out, '\b')
 			}
 			i++
@@ -109,6 +121,7 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 
 		// 3. Tab Handling: advance to next 8-col tab stop within pane
 		if b == '\t' {
+			ensureCursor()
 			targetCol := ((ac.curCol-1)/8 + 1)*8 + 1
 			if targetCol > ac.w {
 				targetCol = ac.w
@@ -124,6 +137,7 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 
 		// 4. Regular Printable Characters (non-escape)
 		if b != 0x1b {
+			ensureCursor()
 			// Track column advancement for ASCII and UTF-8 leading bytes
 			if b < 0x80 || b >= 0xC0 {
 				if ac.curCol > ac.w {
@@ -171,6 +185,7 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 				ac.curRow = clamp(row, 1, ac.h)
 				ac.curCol = clamp(col, 1, ac.w)
 				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
+				cursorSynchronized = true
 
 			case 'G': // Cursor Horizontal Absolute: CSI <c>G
 				col := 1
@@ -181,6 +196,7 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 				}
 				ac.curCol = clamp(col, 1, ac.w)
 				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
+				cursorSynchronized = true
 
 			case 'd': // Cursor Vertical Absolute: CSI <r>d
 				row := 1
@@ -191,26 +207,31 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 				}
 				ac.curRow = clamp(row, 1, ac.h)
 				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
+				cursorSynchronized = true
 
 			case 'A': // Cursor Up: CSI <n>A (clamped to pane top)
 				n := parseCount(params)
 				ac.curRow = clamp(ac.curRow-n, 1, ac.h)
 				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
+				cursorSynchronized = true
 
 			case 'B': // Cursor Down: CSI <n>B (clamped to pane bottom)
 				n := parseCount(params)
 				ac.curRow = clamp(ac.curRow+n, 1, ac.h)
 				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
+				cursorSynchronized = true
 
 			case 'C': // Cursor Forward: CSI <n>C (clamped to pane right)
 				n := parseCount(params)
 				ac.curCol = clamp(ac.curCol+n, 1, ac.w)
 				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
+				cursorSynchronized = true
 
 			case 'D': // Cursor Backward: CSI <n>D (clamped to pane left)
 				n := parseCount(params)
 				ac.curCol = clamp(ac.curCol-n, 1, ac.w)
 				out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
+				cursorSynchronized = true
 
 			case 'K': // Erase in Line: CSI <n>K
 				// Standard \033[K erases all the way to the right edge of the physical
@@ -220,17 +241,21 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 					// Erase from cursor to end of pane line
 					rem := ac.w - ac.curCol + 1
 					if rem > 0 {
+						ensureCursor()
 						out = append(out, fmt.Sprintf("\033[%dX", rem)...)
 					}
 				} else if params == "1" {
 					// Erase from start of pane line to cursor
 					out = append(out, fmt.Sprintf("\033[%d;%dH\033[%dX\033[%d;%dH", ac.curRow+ac.offY-1, ac.offX, ac.curCol, ac.curRow+ac.offY-1, ac.offX+ac.curCol-1)...)
+					cursorSynchronized = true
 				} else if params == "2" {
 					// Erase entire line within pane
 					out = append(out, fmt.Sprintf("\033[%d;%dH\033[%dX\033[%d;%dH", ac.curRow+ac.offY-1, ac.offX, ac.w, ac.curRow+ac.offY-1, ac.offX+ac.curCol-1)...)
+					cursorSynchronized = true
 				}
 
 			case 'X': // Erase Character: CSI <n>X
+				ensureCursor()
 				n := parseCount(params)
 				rem := ac.w - ac.curCol + 1
 				if n > rem {
@@ -246,12 +271,15 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 					out = append(out, ac.erasePaneViewport()...)
 					ac.curRow = 1
 					ac.curCol = 1
+					cursorSynchronized = true
 				} else if params == "" || params == "0" {
 					// 0 (default / clr_eos): Erase from cursor to bottom of pane without wiping lines above
 					out = append(out, ac.eraseBelow()...)
+					cursorSynchronized = true
 				} else if params == "1" {
 					// 1: Erase from top of pane to cursor
 					out = append(out, ac.eraseAbove()...)
+					cursorSynchronized = true
 				}
 
 			case 'r': // Set scrolling region — drop (we manage viewport globally)
@@ -328,10 +356,10 @@ func (ac *ANSICompositor) erasePaneViewport() []byte {
 // without touching lines above the cursor or moving the cursor position.
 func (ac *ANSICompositor) eraseBelow() []byte {
 	var b bytes.Buffer
-	// 1. Erase remaining characters on current row
+	// 1. Position cursor and erase remaining characters on current row
 	rem := ac.w - ac.curCol + 1
 	if rem > 0 {
-		b.WriteString(fmt.Sprintf("\033[%dX", rem))
+		b.WriteString(fmt.Sprintf("\033[%d;%dH\033[%dX", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1, rem))
 	}
 	// 2. Erase all rows below current row within pane bounds
 	for r := ac.curRow + 1; r <= ac.h; r++ {
