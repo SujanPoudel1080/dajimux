@@ -71,12 +71,7 @@ func (p *Pane) StartWithCwd(shellPath string, cols, rows int, env []string, cwd 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if shellPath == "" {
-		shellPath = os.Getenv("SHELL")
-		if shellPath == "" {
-			shellPath = "/bin/zsh"
-		}
-	}
+	shellPath = resolveDefaultShell(shellPath)
 
 	if cols < 2 {
 		cols = 80
@@ -107,6 +102,23 @@ func (p *Pane) StartWithCwd(shellPath string, cols, rows int, env []string, cwd 
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
 	)
+
+	// Ensure PATH contains standard executable locations on Linux & BSD/macOS
+	hasPath := false
+	for _, e := range cmd.Env {
+		if strings.HasPrefix(e, "PATH=") {
+			hasPath = true
+			break
+		}
+	}
+	if !hasPath {
+		home := os.Getenv("HOME")
+		defaultPath := "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
+		if home != "" {
+			defaultPath = fmt.Sprintf("%s:%s/.local/bin:%s/bin", defaultPath, home, home)
+		}
+		cmd.Env = append(cmd.Env, "PATH="+defaultPath)
+	}
 
 	// Start with PTY sizing and controlling terminal setup via creack/pty
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
@@ -287,11 +299,58 @@ func (p *Pane) Close() error {
 	}
 	p.isClosed = true
 
-	if p.Cmd != nil && p.Cmd.Process != nil {
+	if p.Cmd != nil && p.Cmd.Process != nil && p.Cmd.Process.Pid > 0 {
+		pid := p.Cmd.Process.Pid
+		// Terminate process group if available (especially on Linux)
+		_ = syscall.Kill(-pid, syscall.SIGHUP)
 		_ = p.Cmd.Process.Signal(syscall.SIGHUP)
 	}
 	if p.PTY != nil {
 		_ = p.PTY.Close()
 	}
 	return nil
+}
+
+// resolveDefaultShell determines the best available shell across Linux, macOS, and BSD systems.
+func resolveDefaultShell(requested string) string {
+	if requested != "" {
+		if path, err := exec.LookPath(requested); err == nil {
+			return path
+		}
+		if _, err := os.Stat(requested); err == nil {
+			return requested
+		}
+	}
+
+	if env := os.Getenv("SHELL"); env != "" {
+		if path, err := exec.LookPath(env); err == nil {
+			return path
+		}
+		if _, err := os.Stat(env); err == nil {
+			return env
+		}
+	}
+
+	// Try standard login shells in order of preference
+	for _, name := range []string{"bash", "zsh", "sh"} {
+		if path, err := exec.LookPath(name); err == nil {
+			return path
+		}
+	}
+
+	systemPaths := []string{
+		"/bin/bash",
+		"/usr/bin/bash",
+		"/bin/sh",
+		"/usr/bin/sh",
+		"/bin/zsh",
+		"/usr/bin/zsh",
+	}
+	for _, path := range systemPaths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+
+	return "/bin/sh"
 }
