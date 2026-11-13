@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/SujanPoudel1080/dajimux/internal/client"
@@ -296,19 +297,34 @@ func runDefaultClient(sessionName string) {
 		if err != nil {
 			bin = "dajimux"
 		}
+		bin = strings.TrimSuffix(bin, " (deleted)")
 		daemonCmd := exec.Command(bin, "daemon")
 		daemonCmd.SysProcAttr = daemonSysProcAttr()
+
+		// Detach standard streams from controlling terminal to prevent SIGTTOU/SIGTTIN on Linux
+		if devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0); err == nil {
+			daemonCmd.Stdin = devNull
+			daemonCmd.Stdout = devNull
+			daemonCmd.Stderr = devNull
+		}
+
 		if err := daemonCmd.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to auto-spawn daemon: %v\n", err)
 			os.Exit(1)
 		}
 
-		// Wait briefly for socket to become available
-		for i := 0; i < 20; i++ {
+		// Wait briefly for socket to become available (up to 3 seconds)
+		running := false
+		for i := 0; i < 60; i++ {
 			time.Sleep(50 * time.Millisecond)
 			if isDaemonRunning(sockPath) {
+				running = true
 				break
 			}
+		}
+		if !running {
+			fmt.Fprintf(os.Stderr, "Daemon failed to start within timeout. Check permissions at %s\n", sockPath)
+			os.Exit(1)
 		}
 	}
 
