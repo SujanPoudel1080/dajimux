@@ -37,6 +37,11 @@ type clientEntry struct {
 
 // DefaultSocketPath returns the standard socket location for the current user.
 func DefaultSocketPath() string {
+	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+		dir := filepath.Join(xdg, "dajimux")
+		_ = os.MkdirAll(dir, 0700)
+		return filepath.Join(dir, "daemon.sock")
+	}
 	uid := os.Getuid()
 	dir := filepath.Join(os.TempDir(), fmt.Sprintf("dajimux-%d", uid))
 	_ = os.MkdirAll(dir, 0700)
