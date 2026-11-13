@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -133,6 +134,15 @@ func (c *Client) RunWithConn(conn net.Conn) error {
 		return fmt.Errorf("attach: %w", err)
 	}
 
+	// Handle termination signals to cleanly restore terminal raw mode on Linux/macOS
+	termSigCh := make(chan os.Signal, 1)
+	signal.Notify(termSigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		<-termSigCh
+		c.restoreTerminal()
+		os.Exit(0)
+	}()
+
 	// Handle SIGWINCH (terminal resize)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGWINCH)
@@ -145,11 +155,8 @@ func (c *Client) RunWithConn(conn net.Conn) error {
 				c.rows = nr
 				c.mu.Unlock()
 
-				// Clear terminal screen and reset margins on resize to eliminate stale borders
-				os.Stdout.WriteString("\033[H\033[2J")
-				if nr > 3 {
-					os.Stdout.WriteString(fmt.Sprintf("\033[2;%dr", nr-1))
-				}
+				// Clear terminal screen and ensure full scroll margins on resize to eliminate stale borders
+				os.Stdout.WriteString("\033[H\033[2J\033[r")
 
 				rp, _ := json.Marshal(protocol.ResizePayload{Cols: nc, Rows: nr})
 				_ = protocol.WriteEnvelope(conn, protocol.Envelope{
@@ -971,7 +978,10 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	hasBorders := len(state.Panes) > 1 && !state.IsMonocle
 	for _, p := range state.Panes {
 		if p.IsActive {
-			if hasBorders {
+			if comp, ok := c.compositors[p.ID]; ok && comp != nil {
+				activeY = comp.curRow + comp.offY - 1
+				activeX = comp.curCol + comp.offX - 1
+			} else if hasBorders {
 				activeY = p.Y + 2
 				activeX = p.X + 2
 			} else {
@@ -1083,12 +1093,11 @@ func (c *Client) yankScrollback() {
 	}
 
 	if visibleText != "" {
-		b64 := base64.StdEncoding.EncodeToString([]byte(visibleText))
-		fmt.Printf("\033]52;c;%s\a", b64)
+		copyToClipboard(visibleText)
 	}
 
 	c.mu.Lock()
-	c.yankToast = fmt.Sprintf("✓ Copied %d lines to clipboard (OSC 52)", numLines)
+	c.yankToast = fmt.Sprintf("✓ Copied %d lines to clipboard", numLines)
 	c.mu.Unlock()
 	c.renderScrollback()
 
@@ -1098,6 +1107,43 @@ func (c *Client) yankScrollback() {
 		c.yankToast = ""
 		c.mu.Unlock()
 		c.renderScrollback()
+	}()
+}
+
+// copyToClipboard synchronizes text with the clipboard using OSC 52, with Wayland / X11 fallback on Linux.
+func copyToClipboard(text string) {
+	b64 := base64.StdEncoding.EncodeToString([]byte(text))
+	fmt.Printf("\033]52;c;%s\a", b64)
+
+	go func() {
+		// Try Wayland wl-copy
+		if path, err := exec.LookPath("wl-copy"); err == nil {
+			cmd := exec.Command(path)
+			cmd.Stdin = strings.NewReader(text)
+			_ = cmd.Run()
+			return
+		}
+		// Try X11 xclip
+		if path, err := exec.LookPath("xclip"); err == nil {
+			cmd := exec.Command(path, "-selection", "clipboard")
+			cmd.Stdin = strings.NewReader(text)
+			_ = cmd.Run()
+			return
+		}
+		// Try X11 xsel
+		if path, err := exec.LookPath("xsel"); err == nil {
+			cmd := exec.Command(path, "--clipboard", "--input")
+			cmd.Stdin = strings.NewReader(text)
+			_ = cmd.Run()
+			return
+		}
+		// Try macOS pbcopy
+		if path, err := exec.LookPath("pbcopy"); err == nil {
+			cmd := exec.Command(path)
+			cmd.Stdin = strings.NewReader(text)
+			_ = cmd.Run()
+			return
+		}
 	}()
 }
 
@@ -1303,16 +1349,34 @@ func getTermSize() (int, int, error) {
 		Xpixels uint16
 		Ypixels uint16
 	}
-	_, _, errno := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		os.Stdout.Fd(),
-		syscall.TIOCGWINSZ,
-		uintptr(unsafe.Pointer(&ws)),
-	)
-	if errno != 0 {
-		return 80, 24, errno
+	// Try standard descriptors in order (stdout, stdin, stderr)
+	for _, f := range []*os.File{os.Stdout, os.Stdin, os.Stderr} {
+		_, _, errno := syscall.Syscall(
+			syscall.SYS_IOCTL,
+			f.Fd(),
+			syscall.TIOCGWINSZ,
+			uintptr(unsafe.Pointer(&ws)),
+		)
+		if errno == 0 && ws.Cols > 0 && ws.Rows > 0 {
+			return int(ws.Cols), int(ws.Rows), nil
+		}
 	}
-	return int(ws.Cols), int(ws.Rows), nil
+
+	// Fallback to directly querying /dev/tty on Unix/Linux
+	if tty, err := os.Open("/dev/tty"); err == nil {
+		defer tty.Close()
+		_, _, errno := syscall.Syscall(
+			syscall.SYS_IOCTL,
+			tty.Fd(),
+			syscall.TIOCGWINSZ,
+			uintptr(unsafe.Pointer(&ws)),
+		)
+		if errno == 0 && ws.Cols > 0 && ws.Rows > 0 {
+			return int(ws.Cols), int(ws.Rows), nil
+		}
+	}
+
+	return 80, 24, nil
 }
 
 func enableRawMode(fd int) (*syscall.Termios, error) {
