@@ -43,6 +43,7 @@ func PaletteItemsForWorkspaces(totalWS int) []PaletteItem {
 		{ID: "zoom", Title: "Toggle Monocle (Zoom)", Description: "Maximize or restore current pane", Action: ActionToggleMonocle},
 		{ID: "resize", Title: "Resize Mode", Description: "Fine-tune pane split ratios", Action: ActionModeChange},
 		{ID: "scrollback", Title: "Scrollback Mode", Description: "Browse scrollback history and copy text", Action: ActionEnterScrollback},
+		{ID: "help", Title: "Help / Quick Reference", Description: "Show interactive keybinding cheat sheet (?)", Action: ActionToggleHelp},
 		{ID: "detach", Title: "Detach Session", Description: "Disconnect client and keep session running in daemon", Action: ActionDetach},
 	}
 

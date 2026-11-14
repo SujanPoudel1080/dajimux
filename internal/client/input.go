@@ -65,6 +65,7 @@ const (
 	ActionSetLayoutGrid    ActionType = "set_layout_grid"
 	ActionRenameWorkspace  ActionType = "rename_workspace"
 	ActionSplitAuto        ActionType = "split_auto"
+	ActionToggleHelp       ActionType = "toggle_help"
 )
 
 // InputResult contains the outcome of processing user keystrokes.
@@ -298,6 +299,8 @@ func (h *InputHandler) handleNormalMode(data []byte) InputResult {
 			return InputResult{Action: ActionEnterScrollback, TargetMode: protocol.ModeScrollback}
 		case 'd', 'D': // Detach Session
 			res = InputResult{Action: ActionDetach}
+		case '?': // Toggle Help Modal
+			res = InputResult{Action: ActionToggleHelp}
 		default:
 			if b >= '1' && b <= '9' {
 				res = InputResult{

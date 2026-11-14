@@ -49,6 +49,7 @@ type Client struct {
 	prevPaletteH     int
 	lastRenderedCols int
 	lastRenderedRows int
+	showHelp         bool
 	compositors      map[string]*ANSICompositor
 }
 
@@ -319,6 +320,12 @@ func (c *Client) readStdinLoop() error {
 			}
 		}
 
+		// Dismiss help modal on any keypress
+		if c.showHelp {
+			c.closeHelpModal()
+			continue
+		}
+
 		res := c.inputHandler.HandleKey(buf[:n])
 
 		c.mu.Lock()
@@ -403,6 +410,8 @@ func (c *Client) readStdinLoop() error {
 			c.sendAction("close_pane", nil)
 		case ActionToggleMonocle:
 			c.sendAction("toggle_monocle", nil)
+		case ActionToggleHelp:
+			c.toggleHelpModal()
 
 		case ActionSwitchWorkspace:
 			c.sendAction("switch_workspace", map[string]string{
@@ -811,6 +820,8 @@ func (c *Client) executePaletteItem(item PaletteItem) {
 		c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeResize)})
 	case ActionEnterScrollback:
 		c.enterScrollback()
+	case ActionToggleHelp:
+		c.toggleHelpModal()
 	case ActionDetach:
 		c.detach()
 	}
@@ -1333,6 +1344,146 @@ func (c *Client) closePalette() {
 		Type:    protocol.MsgAction,
 		Payload: reqData,
 	})
+}
+
+func (c *Client) toggleHelpModal() {
+	if c.showHelp {
+		c.closeHelpModal()
+	} else {
+		c.showHelp = true
+		c.renderHelpModal()
+	}
+}
+
+func (c *Client) closeHelpModal() {
+	c.showHelp = false
+	c.mu.Lock()
+	state := c.lastState
+	c.mu.Unlock()
+	// Clear the screen and redraw chrome and panes
+	fmt.Print("\033[H\033[2J\033[r")
+	c.renderChrome(state)
+	// Request redraw from daemon to immediately repaint pane contents
+	req := protocol.ActionPayload{Action: "redraw"}
+	reqData, _ := json.Marshal(req)
+	_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
+		Type:    protocol.MsgAction,
+		Payload: reqData,
+	})
+}
+
+func (c *Client) renderHelpModal() {
+	c.mu.Lock()
+	cols := c.cols
+	rows := c.rows
+	c.mu.Unlock()
+
+	helpLines := []string{
+		"MODES & BASICS",
+		"  INSERT Mode     Direct shell typing (default mode)",
+		"  Space + Space   Enter NORMAL mode (or ^B in prefix mode)",
+		"  i, a, Enter     Return to INSERT mode",
+		"",
+		"PANE NAVIGATION & SPLITS (in Normal Mode)",
+		"  h, j, k, l      Spatial pane navigation (left, down, up, right)",
+		"  s / v / e       Split active pane: horizontal / vertical / auto",
+		"  w               Swap focused pane with next pane in tree",
+		"  H, J, K, L      Swap focused pane with spatial neighbor",
+		"  t               Cycle layout presets (BSP -> Master-Stack -> Grid)",
+		"  z               Toggle zoom / monocle (fullscreen active pane)",
+		"  r               Enter resize mode (h/j/k/l or arrow keys to resize)",
+		"  x               Close active pane process",
+		"",
+		"WORKSPACES & SESSIONS",
+		"  1 .. 9          Switch to workspace 1..9",
+		"  m <1-9>         Move active pane to workspace 1..9",
+		"  d               Detach session (leaves background daemon running)",
+		"",
+		"MOUSE & UTILITIES",
+		"  Click Pane      Focus pane | Drag border to resize split ratio",
+		"  Scroll Up       Browse scrollback history (vi motions: j/k, y: yank)",
+		"  : or Space      Open fuzzy searchable command palette",
+		"  ?               Toggle this help screen",
+	}
+
+	boxWidth := 74
+	if boxWidth > cols-4 {
+		boxWidth = cols - 4
+	}
+	if boxWidth < 30 {
+		boxWidth = 30
+	}
+
+	contentLines := len(helpLines)
+	boxHeight := contentLines + 4
+	if boxHeight > rows-2 {
+		boxHeight = rows - 2
+	}
+
+	startX := (cols - boxWidth) / 2
+	startY := (rows - boxHeight) / 2
+	if startX < 1 {
+		startX = 1
+	}
+	if startY < 2 {
+		startY = 2
+	}
+
+	var b strings.Builder
+	b.WriteString("\0337") // Save cursor
+
+	borderFg := "\033[1m\033[38;5;51m" // Bright Cyan
+	bg := "\033[48;5;236m"
+	fg := "\033[38;5;255m"
+	dimFg := "\033[38;5;244m"
+	headerFg := "\033[1m\033[38;5;220m" // Gold / Yellow
+	reset := "\033[0m"
+
+	// Top border
+	title := " dajimux Quick Reference "
+	dashCount := boxWidth - 2 - len(title)
+	if dashCount < 0 {
+		dashCount = 0
+	}
+	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s┌%s%s┐%s", startY, startX, bg, borderFg, title, strings.Repeat("─", dashCount), reset))
+
+	// Content lines
+	visibleContent := boxHeight - 3
+	for i := 0; i < visibleContent; i++ {
+		row := startY + 1 + i
+		line := ""
+		if i < len(helpLines) {
+			line = helpLines[i]
+		}
+		currentFg := fg
+		if strings.HasPrefix(line, "MODES") || strings.HasPrefix(line, "PANE") || strings.HasPrefix(line, "WORKSPACES") || strings.HasPrefix(line, "MOUSE") {
+			currentFg = headerFg
+		}
+
+		lineWidth := len(line)
+		if lineWidth > boxWidth-4 {
+			line = line[:boxWidth-4]
+			lineWidth = boxWidth - 4
+		}
+		padding := boxWidth - 2 - lineWidth - 2
+		if padding < 0 {
+			padding = 0
+		}
+		b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s│%s  %s%s%s%s│%s",
+			row, startX, bg, borderFg, reset+bg, currentFg, line, strings.Repeat(" ", padding), borderFg, reset))
+	}
+
+	// Bottom border with dismiss prompt
+	dismiss := " Press Esc, q, or ? to dismiss "
+	bottomDashes := boxWidth - 2 - len(dismiss)
+	if bottomDashes < 0 {
+		bottomDashes = 0
+	}
+	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s└%s%s%s%s┘%s",
+		startY+boxHeight-1, startX, bg, borderFg, dimFg, dismiss, borderFg, strings.Repeat("─", bottomDashes), reset))
+
+	b.WriteString("\0338") // Restore cursor
+	os.Stdout.WriteString(b.String())
 }
 
 func min(a, b int) int {
