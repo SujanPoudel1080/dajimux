@@ -74,7 +74,7 @@ get_latest_version() {
     fi
 
     if [ -z "${latest:-}" ]; then
-        latest="v0.2.1"
+        latest="v0.2.2"
     fi
     echo "$latest"
 }
