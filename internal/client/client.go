@@ -951,21 +951,34 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 		}
 	}
 
-	leaderHint := "Space+Space: Normal"
-	if c.inputHandler != nil && c.inputHandler.PrefixMode == "prefix" {
-		switch c.inputHandler.LeaderKey {
-		case 0x02:
-			leaderHint = "^B: Prefix"
-		case 0x01:
-			leaderHint = "^A: Prefix"
-		case 0x00:
-			leaderHint = "^Space: Prefix"
-		default:
-			leaderHint = fmt.Sprintf("%c: Prefix", c.inputHandler.LeaderKey)
+	// Context-aware dynamic footer based on current input mode
+	var footerText string
+	isPrefix := c.inputHandler != nil && c.inputHandler.InPrefix()
+
+	if isPrefix {
+		footerText = fmt.Sprintf(" [PREFIX] s/v/e: Split | h/j/k/l: Nav | w: Swap | t: Layout | z: Zoom | d: Detach | x: Close | Esc: Cancel%s", agentTelemetry)
+	} else if state.Mode == protocol.ModeNormal {
+		footerText = fmt.Sprintf(" [NORMAL] i/Enter: Insert | h/j/k/l: Nav | s/v/e: Split | w: Swap | t: Layout | z: Zoom | d: Detach | x: Close | ?: Help%s", agentTelemetry)
+	} else if state.Mode == protocol.ModeResize {
+		footerText = fmt.Sprintf(" [RESIZE] h/j/k/l: Adjust Size | Enter/Esc: Normal Mode%s", agentTelemetry)
+	} else {
+		// INSERT Mode
+		leaderHint := "Space+Space: Normal Mode"
+		if c.inputHandler != nil && c.inputHandler.PrefixMode == "prefix" {
+			switch c.inputHandler.LeaderKey {
+			case 0x02:
+				leaderHint = "^B: Prefix"
+			case 0x01:
+				leaderHint = "^A: Prefix"
+			case 0x00:
+				leaderHint = "^Space: Prefix"
+			default:
+				leaderHint = fmt.Sprintf("%c: Prefix", c.inputHandler.LeaderKey)
+			}
 		}
+		footerText = fmt.Sprintf(" [INSERT] %s | Click to Focus | Drag Borders to Resize%s", leaderHint, agentTelemetry)
 	}
 
-	footerText := fmt.Sprintf(" %s | h/j/k/l: Nav | w: Swap | t: Layout | s/v/e: Split | m<1-9>: Move WS | x: Close%s", leaderHint, agentTelemetry)
 	b.WriteString(footerText)
 	if cols > len(footerText) {
 		b.WriteString(strings.Repeat(" ", cols-len(footerText)))
