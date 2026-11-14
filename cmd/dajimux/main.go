@@ -44,10 +44,16 @@ func main() {
 	case "daemon":
 		runDaemonCmd(os.Args[2:])
 
-	case "attach":
+	case "attach", "a", "resume":
 		sessionName := "main"
-		if len(os.Args) > 2 {
-			sessionName = os.Args[2]
+		args := os.Args[2:]
+		for i := 0; i < len(args); i++ {
+			if (args[i] == "-t" || args[i] == "--target") && i+1 < len(args) {
+				sessionName = args[i+1]
+				i++
+			} else if !strings.HasPrefix(args[i], "-") {
+				sessionName = args[i]
+			}
 		}
 		runDefaultClient(sessionName)
 
@@ -130,7 +136,7 @@ Usage:
   dajimux kill-session <name>  Terminate a specific active session
   dajimux rename-session <old> <new>  Rename an active session
   dajimux session [rename|kill|ls]    Manage sessions
-  dajimux attach <name>        Attach to a named session
+  dajimux attach / a / resume [name]  Attach to or resume a session (-t <name>)
   dajimux restore [name]       Restore session from persisted state
   dajimux service [action]     Manage daemon service (install, status, uninstall)
   dajimux mcp [flags]          Run Model Context Protocol (MCP) server over stdio
@@ -161,6 +167,7 @@ Vim Modal Controls:
     d                          Detach session (daemon keeps running)
     [                          Enter scrollback vi-mode
     : / Space                  Open command palette
+    ?                          Toggle quick reference cheat sheet
     r                          Enter resize mode
     1 - 9                      Switch workspace
     i, a, Enter                Return to INSERT mode
