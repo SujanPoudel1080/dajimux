@@ -101,6 +101,9 @@ func (s *Session) createPane(id, title string) *Pane {
 	p.SetOnExit(func(pid string) {
 		_ = s.ClosePaneByID(pid)
 	})
+	p.SetOnTitleChange(func(pid, newTitle string) {
+		go s.NotifyState()
+	})
 	return p
 }
 
