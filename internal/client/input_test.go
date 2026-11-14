@@ -148,6 +148,11 @@ func TestInputHandlerSwapAndMove(t *testing.T) {
 	if handler.pendingMove {
 		t.Fatalf("expected pendingMove to be reset")
 	}
+	// Test '?' for ToggleHelp
+	resHelp := handler.HandleKey([]byte{'?'})
+	if resHelp.Action != ActionToggleHelp {
+		t.Fatalf("expected ActionToggleHelp on '?', got %s", resHelp.Action)
+	}
 }
 
 func TestInputHandlerPrefixMode(t *testing.T) {
