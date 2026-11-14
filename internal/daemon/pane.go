@@ -28,9 +28,10 @@ type Pane struct {
 	maxRawBytes int
 	scrollback  []string
 	maxLines    int
-	isClosed    bool
-	listeners   map[chan []byte]struct{}
-	onExit      func(paneID string)
+	isClosed      bool
+	listeners     map[chan []byte]struct{}
+	onExit        func(paneID string)
+	onTitleChange func(paneID, newTitle string)
 }
 
 // NewPane allocates a pane instance with default 2000 lines scrollback buffer.
@@ -59,6 +60,13 @@ func (p *Pane) SetOnExit(fn func(paneID string)) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.onExit = fn
+}
+
+// SetOnTitleChange sets a callback to execute when the child terminal dynamically changes title via OSC sequences.
+func (p *Pane) SetOnTitleChange(fn func(paneID, newTitle string)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onTitleChange = fn
 }
 
 // Start spawns an interactive login shell inside a new pseudoterminal.
@@ -184,6 +192,20 @@ func (p *Pane) readLoop() {
 				}
 			}
 			p.mu.Unlock()
+
+			// Check for dynamic title change via OSC sequence (OSC 0 / OSC 2)
+			if newTitle := extractOSCTitle(chunk); newTitle != "" {
+				p.mu.Lock()
+				var cb func(string, string)
+				if p.Title != newTitle {
+					p.Title = newTitle
+					cb = p.onTitleChange
+				}
+				p.mu.Unlock()
+				if cb != nil {
+					cb(p.ID, newTitle)
+				}
+			}
 
 			// Parse clean lines for agent capture / scrollback
 			for _, b := range chunk {
@@ -354,3 +376,43 @@ func resolveDefaultShell(requested string) string {
 
 	return "/bin/sh"
 }
+
+// extractOSCTitle scans an incoming terminal chunk for OSC 0 or OSC 2 window title escape sequences:
+//   \033]0;<title>\a or \033]2;<title>\a
+//   \033]0;<title>\033\\ or \033]2;<title>\033\\
+func extractOSCTitle(chunk []byte) string {
+	for i := 0; i < len(chunk)-4; i++ {
+		if chunk[i] == 0x1b && chunk[i+1] == ']' && (chunk[i+2] == '0' || chunk[i+2] == '2') && chunk[i+3] == ';' {
+			start := i + 4
+			end := -1
+			for j := start; j < len(chunk); j++ {
+				if chunk[j] == 0x07 { // BEL
+					end = j
+					break
+				}
+				if chunk[j] == 0x1b && j+1 < len(chunk) && chunk[j+1] == '\\' { // ST
+					end = j
+					break
+				}
+			}
+			if end > start {
+				raw := string(chunk[start:end])
+				var b strings.Builder
+				for _, r := range raw {
+					if r >= 32 && r != 127 {
+						b.WriteRune(r)
+					}
+				}
+				cleaned := strings.TrimSpace(b.String())
+				if len(cleaned) > 64 {
+					cleaned = cleaned[:64]
+				}
+				if cleaned != "" {
+					return cleaned
+				}
+			}
+		}
+	}
+	return ""
+}
+
