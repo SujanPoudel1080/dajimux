@@ -699,16 +699,32 @@ func (c *Client) handleMouseEvent(evt *MouseEvent) {
 		return
 	}
 
-	// 2. Mouse Drag (Dynamic Resize)
+	// 2. Mouse Drag (Dynamic Resize for both vertical and horizontal splits)
 	if evt.IsDrag {
-		if c.dragStart != nil && cols > 0 {
+		if c.dragStart != nil && cols > 0 && rows > 0 {
 			dx := evt.X - c.dragStart.X
-			if dx > 2 || dx < -2 {
+			dy := evt.Y - c.dragStart.Y
+			absDx := dx
+			if absDx < 0 {
+				absDx = -absDx
+			}
+			absDy := dy
+			if absDy < 0 {
+				absDy = -absDy
+			}
+
+			if absDx >= absDy && absDx > 2 {
 				delta := float64(dx) / float64(cols)
 				c.sendAction("resize_delta", map[string]string{
 					"delta": fmt.Sprintf("%.2f", delta),
 				})
 				c.dragStart.X = evt.X
+			} else if absDy > absDx && absDy > 1 {
+				delta := float64(dy) / float64(rows)
+				c.sendAction("resize_delta", map[string]string{
+					"delta": fmt.Sprintf("%.2f", delta),
+				})
+				c.dragStart.Y = evt.Y
 			}
 		}
 		return
