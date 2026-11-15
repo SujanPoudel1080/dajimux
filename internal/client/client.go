@@ -17,6 +17,7 @@ import (
 
 	"github.com/SujanPoudel1080/dajimux/internal/config"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
+	"github.com/SujanPoudel1080/dajimux/internal/sysstats"
 )
 
 // DragPoint tracks coordinate origin during mouse split dragging.
@@ -49,8 +50,9 @@ type Client struct {
 	prevPaletteH     int
 	lastRenderedCols int
 	lastRenderedRows int
-	showHelp         bool
-	compositors      map[string]*ANSICompositor
+	showHelp          bool
+	compositors       map[string]*ANSICompositor
+	sysStatsCollector *sysstats.Collector
 }
 
 // NewClient initializes a client for the target session.
@@ -73,13 +75,19 @@ func NewClientWithConfig(socketPath, sessionName string, cfg *config.Config) *Cl
 	}
 	handler.SetPrefixMode(cfg.Input.PrefixMode, cfg.Input.CustomLeader)
 
+	var statsCol *sysstats.Collector
+	if cfg.General.ShowSystemStats {
+		statsCol = sysstats.NewCollector(2 * time.Second)
+	}
+
 	return &Client{
-		SocketPath:   socketPath,
-		SessionName:  sessionName,
-		Config:       cfg,
-		inputHandler: handler,
-		palette:      NewPalette(),
-		compositors:  make(map[string]*ANSICompositor),
+		SocketPath:        socketPath,
+		SessionName:       sessionName,
+		Config:            cfg,
+		inputHandler:      handler,
+		palette:           NewPalette(),
+		compositors:       make(map[string]*ANSICompositor),
+		sysStatsCollector: statsCol,
 	}
 }
 
@@ -170,6 +178,14 @@ func (c *Client) RunWithConn(conn net.Conn) error {
 
 	// Daemon -> Client read loop
 	go c.readDaemonLoop()
+
+	// Periodic system telemetry ticker (CPU/RAM)
+	if c.sysStatsCollector != nil {
+		c.sysStatsCollector.Start(func(st sysstats.Stats) {
+			c.renderTopStats()
+		})
+		defer c.sysStatsCollector.Stop()
+	}
 
 	// Stdin -> Client write loop
 	return c.readStdinLoop()
@@ -951,8 +967,28 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	}
 	layoutBadge := fmt.Sprintf(" <%s> ", layoutStr)
 
-	// Pad header and place layout indicator at far right
-	if cols > printedHeaderLen+len(layoutBadge) {
+	// System stats badge (CPU & RAM)
+	var statsPlain, statsANSI string
+	if c.sysStatsCollector != nil {
+		st := c.sysStatsCollector.Stats()
+		avail := cols - printedHeaderLen - len(layoutBadge)
+		statsPlain, statsANSI = formatHeaderStats(st, avail, headerBg, headerFg)
+	}
+
+	rightLen := len(layoutBadge)
+	if statsPlain != "" {
+		rightLen += len(statsPlain) + 1
+	}
+
+	// Pad header and place stats & layout indicator at far right
+	if cols > printedHeaderLen+rightLen {
+		pad := cols - printedHeaderLen - rightLen
+		b.WriteString(strings.Repeat(" ", pad))
+		if statsANSI != "" {
+			b.WriteString(statsANSI + " ")
+		}
+		b.WriteString("\033[1m\033[38;5;51m" + layoutBadge + "\033[0m" + headerBg + headerFg)
+	} else if cols > printedHeaderLen+len(layoutBadge) {
 		pad := cols - printedHeaderLen - len(layoutBadge)
 		b.WriteString(strings.Repeat(" ", pad))
 		b.WriteString("\033[1m\033[38;5;51m" + layoutBadge + "\033[0m" + headerBg + headerFg)
@@ -1039,6 +1075,107 @@ func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	if c.palette != nil && sizeChanged {
 		c.renderPalette()
 	}
+}
+
+// formatHeaderStats selects the best fitting system stats representation for available header space.
+func formatHeaderStats(st sysstats.Stats, availSpace int, headerBg, headerFg string) (string, string) {
+	full := st.Format()
+	compact := st.FormatCompact()
+	short := fmt.Sprintf("CPU %.0f%%", st.CPUPercent)
+
+	if availSpace >= len(full)+2 {
+		return full, st.FormatANSI(headerBg, headerFg)
+	}
+	if availSpace >= len(compact)+2 {
+		return compact, st.FormatANSI(headerBg, headerFg)
+	}
+	if availSpace >= len(short)+2 {
+		return short, short
+	}
+	return "", ""
+}
+
+// renderTopStats writes an in-place update of CPU and RAM telemetry on Row 1 without disturbing cursor position or pane buffers.
+func (c *Client) renderTopStats() {
+	c.mu.Lock()
+	if !c.isRunning || c.showHelp || c.palette != nil || len(c.scrollbackLines) > 0 || c.sysStatsCollector == nil {
+		c.mu.Unlock()
+		return
+	}
+	cols := c.cols
+	state := c.lastState
+	cfg := c.Config
+	c.mu.Unlock()
+
+	if cols < 40 {
+		return
+	}
+
+	headerBg := "\033[48;5;236m"
+	headerFg := "\033[38;5;255m"
+	if cfg != nil && cfg.Theme.StatusBarBg != "" {
+		headerBg = cfg.Theme.StatusBarBg
+	}
+	if cfg != nil && cfg.Theme.StatusBarFg != "" {
+		headerFg = cfg.Theme.StatusBarFg
+	}
+
+	// Calculate printed header prefix length
+	modeText := string(state.Mode)
+	if c.inputHandler != nil && c.inputHandler.InPrefix() {
+		modeText = "PREFIX"
+	}
+	printedHeaderLen := len(modeText) + 2 + len(state.SessionName) + 12
+
+	wsNames := make(map[int]string)
+	for _, ws := range state.Workspaces {
+		wsNames[ws.ID] = ws.Name
+	}
+	for i := 1; i <= 9; i++ {
+		name := wsNames[i]
+		hasCustomName := name != "" && name != fmt.Sprintf("ws-%d", i) && (i != 1 || name != "main")
+		tabLabel := fmt.Sprintf("%d", i)
+		if hasCustomName {
+			tabLabel = fmt.Sprintf("%d:%s", i, name)
+		}
+		if i == state.ActiveWorkspace {
+			printedHeaderLen += len(tabLabel) + 3
+		} else if i <= state.TotalWorkspaces {
+			printedHeaderLen += len(tabLabel) + 2
+		}
+	}
+
+	layoutStr := strings.ToUpper(state.LayoutType)
+	if layoutStr == "" || layoutStr == "BSP" {
+		layoutStr = "BSP"
+	} else if layoutStr == "MASTER_STACK" {
+		layoutStr = "MASTER"
+	} else if layoutStr == "GRID" {
+		layoutStr = "GRID"
+	}
+	layoutBadge := fmt.Sprintf(" <%s> ", layoutStr)
+
+	st := c.sysStatsCollector.Stats()
+	avail := cols - printedHeaderLen - len(layoutBadge)
+	statsPlain, statsANSI := formatHeaderStats(st, avail, headerBg, headerFg)
+	if statsPlain == "" {
+		return
+	}
+
+	rightLen := len(statsPlain) + 1 + len(layoutBadge)
+	startCol := cols - rightLen + 1
+	if startCol <= printedHeaderLen {
+		return
+	}
+
+	var b strings.Builder
+	b.WriteString("\0337") // Save hardware cursor
+	b.WriteString(fmt.Sprintf("\033[1;%dH", startCol))
+	b.WriteString(headerBg + headerFg)
+	b.WriteString(statsANSI + " ")
+	b.WriteString("\033[1m\033[38;5;51m" + layoutBadge + "\033[0m")
+	b.WriteString("\0338") // Restore hardware cursor
+	os.Stdout.WriteString(b.String())
 }
 
 // renderScrollback renders the scrollback buffer lines and navigation footer.
