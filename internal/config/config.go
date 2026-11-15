@@ -21,6 +21,7 @@ type GeneralConfig struct {
 	DefaultShell    string `yaml:"default_shell"`
 	ScrollbackLines int    `yaml:"scrollback_lines"`
 	MouseSupport    bool   `yaml:"mouse_support"`
+	ShowSystemStats bool   `yaml:"show_system_stats"`
 }
 
 // InputConfig holds keybinding and modal behavior settings.
@@ -52,6 +53,7 @@ func DefaultConfig() *Config {
 			DefaultShell:    shell,
 			ScrollbackLines: 5000,
 			MouseSupport:    true,
+			ShowSystemStats: true,
 		},
 		Input: InputConfig{
 			PrefixMode:       "modal",
@@ -103,6 +105,13 @@ func Load(path string) (*Config, error) {
 	}
 
 	// Intermediate unmarshal struct to allow string color names/escapes or raw YAML
+	type rawGeneralConfig struct {
+		DefaultShell    string `yaml:"default_shell"`
+		ScrollbackLines int    `yaml:"scrollback_lines"`
+		MouseSupport    *bool  `yaml:"mouse_support"`
+		ShowSystemStats *bool  `yaml:"show_system_stats"`
+	}
+
 	type rawThemeConfig struct {
 		BorderActive      string `yaml:"border_active"`
 		BorderInactive    string `yaml:"border_inactive"`
@@ -113,9 +122,9 @@ func Load(path string) (*Config, error) {
 	}
 
 	type rawConfig struct {
-		General GeneralConfig  `yaml:"general"`
-		Input   InputConfig    `yaml:"input"`
-		Theme   rawThemeConfig `yaml:"theme"`
+		General rawGeneralConfig `yaml:"general"`
+		Input   InputConfig      `yaml:"input"`
+		Theme   rawThemeConfig   `yaml:"theme"`
 	}
 
 	var raw rawConfig
@@ -128,6 +137,12 @@ func Load(path string) (*Config, error) {
 	}
 	if raw.General.ScrollbackLines > 0 {
 		cfg.General.ScrollbackLines = raw.General.ScrollbackLines
+	}
+	if raw.General.MouseSupport != nil {
+		cfg.General.MouseSupport = *raw.General.MouseSupport
+	}
+	if raw.General.ShowSystemStats != nil {
+		cfg.General.ShowSystemStats = *raw.General.ShowSystemStats
 	}
 	if raw.Input.PrefixMode != "" {
 		cfg.Input.PrefixMode = raw.Input.PrefixMode
@@ -232,6 +247,8 @@ general:
   scrollback_lines: 5000
   # Enable terminal mouse support (click to focus, drag to resize, wheel to scroll)
   mouse_support: true
+  # Display live RAM and CPU utilization in the terminal header
+  show_system_stats: true
 
 input:
   # Mode switching behavior: "modal" (Vim Space+Space)
