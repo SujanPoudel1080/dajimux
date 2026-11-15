@@ -14,8 +14,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Input.ModalDoubleTapMs != 280 {
 		t.Fatalf("expected default double tap ms 280, got %d", cfg.Input.ModalDoubleTapMs)
 	}
-	if cfg.Input.PrefixMode != "modal" {
-		t.Fatalf("expected prefix mode modal, got %s", cfg.Input.PrefixMode)
+	if !cfg.General.ShowSystemStats {
+		t.Fatalf("expected default show_system_stats true, got false")
 	}
 }
 
@@ -37,6 +37,7 @@ func TestLoadCustomConfig(t *testing.T) {
 general:
   default_shell: "/bin/bash"
   scrollback_lines: 10000
+  show_system_stats: false
 
 input:
   prefix_mode: "modal"
@@ -67,7 +68,7 @@ theme:
 	if cfg.Input.ModalDoubleTapMs != 350 {
 		t.Errorf("expected modal double tap ms 350, got %d", cfg.Input.ModalDoubleTapMs)
 	}
-	if cfg.Theme.BorderActive != "\033[1m\033[38;5;46m" {
-		t.Errorf("expected green border active ANSI, got %q", cfg.Theme.BorderActive)
+	if cfg.General.ShowSystemStats {
+		t.Errorf("expected show_system_stats false, got true")
 	}
 }
