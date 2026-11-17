@@ -1,13 +1,11 @@
 package client
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -28,29 +26,23 @@ type DragPoint struct {
 
 // Client manages the terminal UI, raw input mode, and IPC connection to the daemon.
 type Client struct {
-	mu              sync.Mutex
-	SocketPath      string
-	SessionName     string
-	Config          *config.Config
-	conn            net.Conn
-	inputHandler    *InputHandler
-	palette         *Palette
-	scrollbackLines []string
-	scrollOffset    int
-	lastState       protocol.LayoutStatePayload
-	cols            int
-	rows            int
-	origTerm        *syscall.Termios
-	isRunning       bool
-	dragStart        *DragPoint
-	yankToast        string
-	prevPaletteX     int
-	prevPaletteY     int
-	prevPaletteW     int
-	prevPaletteH     int
-	lastRenderedCols int
-	lastRenderedRows int
-	showHelp          bool
+	mu                sync.Mutex
+	SocketPath        string
+	SessionName       string
+	Config            *config.Config
+	conn              net.Conn
+	inputHandler      *InputHandler
+	palette           *Palette
+	paletteView       *PaletteOverlay
+	helpModal         *HelpModal
+	scrollback        *ScrollbackViewer
+	chrome            *ChromeRenderer
+	lastState         protocol.LayoutStatePayload
+	cols              int
+	rows              int
+	origTerm          *syscall.Termios
+	isRunning         bool
+	dragStart         *DragPoint
 	compositors       map[string]*ANSICompositor
 	sysStatsCollector *sysstats.Collector
 }
@@ -86,6 +78,10 @@ func NewClientWithConfig(socketPath, sessionName string, cfg *config.Config) *Cl
 		Config:            cfg,
 		inputHandler:      handler,
 		palette:           NewPalette(),
+		paletteView:       NewPaletteOverlay(),
+		helpModal:         NewHelpModal(),
+		scrollback:        NewScrollbackViewer(),
+		chrome:            NewChromeRenderer(cfg, statsCol),
 		compositors:       make(map[string]*ANSICompositor),
 		sysStatsCollector: statsCol,
 	}
@@ -230,8 +226,7 @@ func (c *Client) readDaemonLoop() {
 			var res protocol.PaneCaptureResponse
 			if err := json.Unmarshal(env.Payload, &res); err == nil {
 				c.mu.Lock()
-				c.scrollbackLines = res.Lines
-				c.scrollOffset = 0
+				c.scrollback.SetLines(res.Lines)
 				c.mu.Unlock()
 				c.renderScrollback()
 			}
@@ -337,7 +332,7 @@ func (c *Client) readStdinLoop() error {
 		}
 
 		// Dismiss help modal on any keypress
-		if c.showHelp {
+		if c.helpModal.IsVisible() {
 			c.closeHelpModal()
 			continue
 		}
@@ -483,78 +478,44 @@ func (c *Client) readStdinLoop() error {
 			}
 
 		case ActionEnterScrollback:
-			c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeScrollback)})
-			c.mu.Lock()
-			activeID := c.lastState.ActivePaneID
-			c.mu.Unlock()
-			req := protocol.PaneCaptureRequest{
-				TargetPaneID: activeID,
-				Lines:        1000,
-			}
-			reqData, _ := json.Marshal(req)
-			_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
-				Type:    protocol.MsgPaneCapture,
-				Payload: reqData,
-			})
+			c.enterScrollback()
 
 		case ActionExitScrollback:
 			c.exitScrollback()
 
 		case ActionScrollUp:
 			c.mu.Lock()
-			maxOffset := len(c.scrollbackLines) - (c.rows - 2)
-			if maxOffset < 0 {
-				maxOffset = 0
-			}
-			if c.scrollOffset < maxOffset {
-				c.scrollOffset++
-			}
+			c.scrollback.ScrollUp(1, c.rows)
 			c.mu.Unlock()
 			c.renderScrollback()
 
 		case ActionScrollDown:
 			c.mu.Lock()
-			if c.scrollOffset > 0 {
-				c.scrollOffset--
-			}
+			c.scrollback.ScrollDown(1)
 			c.mu.Unlock()
 			c.renderScrollback()
 
 		case ActionScrollPageUp:
 			c.mu.Lock()
-			maxOffset := len(c.scrollbackLines) - (c.rows - 2)
-			if maxOffset < 0 {
-				maxOffset = 0
-			}
-			c.scrollOffset += 15
-			if c.scrollOffset > maxOffset {
-				c.scrollOffset = maxOffset
-			}
+			c.scrollback.ScrollUp(15, c.rows)
 			c.mu.Unlock()
 			c.renderScrollback()
 
 		case ActionScrollPageDown:
 			c.mu.Lock()
-			c.scrollOffset -= 15
-			if c.scrollOffset < 0 {
-				c.scrollOffset = 0
-			}
+			c.scrollback.ScrollDown(15)
 			c.mu.Unlock()
 			c.renderScrollback()
 
 		case ActionScrollTop:
 			c.mu.Lock()
-			maxOffset := len(c.scrollbackLines) - (c.rows - 2)
-			if maxOffset < 0 {
-				maxOffset = 0
-			}
-			c.scrollOffset = maxOffset
+			c.scrollback.ScrollTop(c.rows)
 			c.mu.Unlock()
 			c.renderScrollback()
 
 		case ActionScrollBottom:
 			c.mu.Lock()
-			c.scrollOffset = 0
+			c.scrollback.ScrollBottom()
 			c.mu.Unlock()
 			c.renderScrollback()
 
@@ -598,8 +559,7 @@ func (c *Client) enterScrollback() {
 
 func (c *Client) exitScrollback() {
 	c.mu.Lock()
-	c.scrollbackLines = nil
-	c.scrollOffset = 0
+	c.scrollback.Clear()
 	c.mu.Unlock()
 	c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeNormal)})
 	c.renderChrome(c.lastState)
@@ -615,58 +575,10 @@ func (c *Client) exitScrollback() {
 func (c *Client) findWorkspaceFromHeaderClick(clickX int) int {
 	c.mu.Lock()
 	state := c.lastState
+	inPrefix := c.inputHandler != nil && c.inputHandler.InPrefix()
 	c.mu.Unlock()
 
-	mode := state.Mode
-	if mode == "" {
-		mode = protocol.ModeInsert
-	}
-	sessionName := state.SessionName
-	if sessionName == "" {
-		sessionName = "main"
-	}
-
-	// Calculate start column of workspace list in row 1:
-	// Format: " MODE " + " [dajimux:SESSION] "
-	startCol := 1 + (len(mode) + 2) + (len(sessionName) + 12)
-
-	wsNames := make(map[int]string)
-	for _, ws := range state.Workspaces {
-		wsNames[ws.ID] = ws.Name
-	}
-
-	currCol := startCol
-	totalWS := state.TotalWorkspaces
-	if totalWS < 1 {
-		totalWS = 1
-	}
-	if totalWS > 9 {
-		totalWS = 9
-	}
-
-	for i := 1; i <= 9; i++ {
-		name := wsNames[i]
-		hasCustomName := name != "" && name != fmt.Sprintf("ws-%d", i) && (i != 1 || name != "main")
-
-		tabLabel := fmt.Sprintf("%d", i)
-		if hasCustomName {
-			tabLabel = fmt.Sprintf("%d:%s", i, name)
-		}
-
-		width := len(tabLabel) + 2 // " %s "
-		if i == state.ActiveWorkspace {
-			width = len(tabLabel) + 3 // " %s* "
-		}
-
-		if i <= totalWS || i == state.ActiveWorkspace {
-			if clickX >= currCol && clickX < currCol+width {
-				return i
-			}
-			currCol += width
-		}
-	}
-
-	return 0
+	return c.chrome.WorkspaceFromHeaderClick(clickX, state, inPrefix)
 }
 
 func (c *Client) handleMouseEvent(evt *MouseEvent) {
@@ -686,14 +598,7 @@ func (c *Client) handleMouseEvent(evt *MouseEvent) {
 			c.enterScrollback()
 		}
 		c.mu.Lock()
-		maxOffset := len(c.scrollbackLines) - (rows - 2)
-		if maxOffset < 0 {
-			maxOffset = 0
-		}
-		c.scrollOffset += 3
-		if c.scrollOffset > maxOffset {
-			c.scrollOffset = maxOffset
-		}
+		c.scrollback.ScrollUp(3, rows)
 		c.mu.Unlock()
 		c.renderScrollback()
 		return
@@ -702,9 +607,8 @@ func (c *Client) handleMouseEvent(evt *MouseEvent) {
 	if evt.Button == MouseWheelDown {
 		if state.Mode == protocol.ModeScrollback {
 			c.mu.Lock()
-			c.scrollOffset -= 3
-			if c.scrollOffset <= 0 {
-				c.scrollOffset = 0
+			c.scrollback.ScrollDown(3)
+			if c.scrollback.Offset() == 0 {
 				c.mu.Unlock()
 				c.exitScrollback()
 			} else {
@@ -870,621 +774,125 @@ func (c *Client) sendAction(action string, params map[string]string) {
 	})
 }
 
-// renderChrome draws the top tab bar, pane borders, and bottom agent status bar.
+// renderChrome delegates drawing of the top tab bar, pane borders, and bottom agent status bar to ChromeRenderer.
 func (c *Client) renderChrome(state protocol.LayoutStatePayload) {
 	c.mu.Lock()
 	cols := c.cols
 	rows := c.rows
-	sizeChanged := (cols != c.lastRenderedCols || rows != c.lastRenderedRows)
-	c.lastRenderedCols = cols
-	c.lastRenderedRows = rows
+	inPrefix := c.inputHandler != nil && c.inputHandler.InPrefix()
+	leaderHint := c.getLeaderHint()
+	compositors := c.compositors
 	c.mu.Unlock()
 
-	var b strings.Builder
-
-	// Save cursor
-	b.WriteString("\0337")
-
-	if sizeChanged {
-		// Clear entire screen and reset margins to remove stale pane borders, old footers, and overlays from previous sizes
-		b.WriteString("\033[H\033[2J\033[r")
-	}
-
-	// 1. Draw Top Header (Workspaces & Mode)
-	b.WriteString("\033[1;1H") // Move to row 1, col 1
-
-	headerBg := "\033[48;5;236m"
-	headerFg := "\033[38;5;255m"
-	activeBorder := ""
-	inactiveBorder := ""
-	footerBg := "\033[48;5;236m"
-	footerFg := "\033[38;5;250m"
-
-	if c.Config != nil {
-		if c.Config.Theme.StatusBarBg != "" {
-			headerBg = c.Config.Theme.StatusBarBg
-			footerBg = c.Config.Theme.StatusBarBg
-		}
-		if c.Config.Theme.StatusBarFg != "" {
-			footerFg = c.Config.Theme.StatusBarFg
-		}
-		activeBorder = c.Config.Theme.BorderActive
-		inactiveBorder = c.Config.Theme.BorderInactive
-	}
-
-	b.WriteString(headerBg)
-	b.WriteString(headerFg)
-
-	// Mode badge color
-	modeText := string(state.Mode)
-	modeColor := "\033[48;5;28m\033[38;5;255m" // Green for Insert
-	if c.inputHandler != nil && c.inputHandler.InPrefix() {
-		modeText = "PREFIX"
-		modeColor = "\033[48;5;33m\033[38;5;255m\033[1m" // Bright Blue for Prefix awaiting command
-	} else if state.Mode == protocol.ModeNormal {
-		modeColor = "\033[48;5;166m\033[38;5;255m" // Orange for Normal
-	} else if state.Mode == protocol.ModeResize {
-		modeColor = "\033[48;5;160m\033[38;5;255m" // Red for Resize
-	}
-	// Workspaces
-	wsNames := make(map[int]string)
-	for _, ws := range state.Workspaces {
-		wsNames[ws.ID] = ws.Name
-	}
-
-	headerPrefix := fmt.Sprintf("%s %s %s%s [dajimux:%s] ", modeColor, modeText, headerBg, headerFg, state.SessionName)
-	b.WriteString(headerPrefix)
-	printedHeaderLen := len(modeText) + 2 + len(state.SessionName) + 12
-
-	for i := 1; i <= 9; i++ {
-		name := wsNames[i]
-		hasCustomName := name != "" && name != fmt.Sprintf("ws-%d", i) && (i != 1 || name != "main")
-
-		tabLabel := fmt.Sprintf("%d", i)
-		if hasCustomName {
-			tabLabel = fmt.Sprintf("%d:%s", i, name)
-		}
-
-		if i == state.ActiveWorkspace {
-			seg := fmt.Sprintf(" %s* ", tabLabel)
-			b.WriteString(fmt.Sprintf("\033[48;5;240m\033[1m%s\033[22m%s", seg, headerBg))
-			printedHeaderLen += len(seg)
-		} else if i <= state.TotalWorkspaces {
-			seg := fmt.Sprintf(" %s ", tabLabel)
-			b.WriteString(seg)
-			printedHeaderLen += len(seg)
-		}
-	}
-
-	// Layout preset badge at far right
-	layoutStr := strings.ToUpper(state.LayoutType)
-	if layoutStr == "" || layoutStr == "BSP" {
-		layoutStr = "BSP"
-	} else if layoutStr == "MASTER_STACK" {
-		layoutStr = "MASTER"
-	} else if layoutStr == "GRID" {
-		layoutStr = "GRID"
-	}
-	layoutBadge := fmt.Sprintf(" <%s> ", layoutStr)
-
-	// System stats badge (CPU & RAM)
-	var statsPlain, statsANSI string
-	if c.sysStatsCollector != nil {
-		st := c.sysStatsCollector.Stats()
-		avail := cols - printedHeaderLen - len(layoutBadge)
-		statsPlain, statsANSI = formatHeaderStats(st, avail, headerBg, headerFg)
-	}
-
-	rightLen := len(layoutBadge)
-	if statsPlain != "" {
-		rightLen += len(statsPlain) + 1
-	}
-
-	// Pad header and place stats & layout indicator at far right
-	if cols > printedHeaderLen+rightLen {
-		pad := cols - printedHeaderLen - rightLen
-		b.WriteString(strings.Repeat(" ", pad))
-		if statsANSI != "" {
-			b.WriteString(statsANSI + " ")
-		}
-		b.WriteString("\033[1m\033[38;5;51m" + layoutBadge + "\033[0m" + headerBg + headerFg)
-	} else if cols > printedHeaderLen+len(layoutBadge) {
-		pad := cols - printedHeaderLen - len(layoutBadge)
-		b.WriteString(strings.Repeat(" ", pad))
-		b.WriteString("\033[1m\033[38;5;51m" + layoutBadge + "\033[0m" + headerBg + headerFg)
-	} else if cols > printedHeaderLen {
-		b.WriteString(strings.Repeat(" ", cols-printedHeaderLen))
-	}
-	b.WriteString("\033[0m")
-
-	// 2. Draw Borders and Pane Headers
-	b.WriteString(RenderBordersWithTheme(state.Panes, cols, rows, state.IsMonocle, activeBorder, inactiveBorder))
-
-	// 3. Draw Bottom Status Bar (Agent Telemetry & Shortcuts)
-	b.WriteString(fmt.Sprintf("\033[%d;1H", rows)) // Move to last row
-	b.WriteString(footerBg)
-	b.WriteString(footerFg)
-
-	// Look for active pane's agent telemetry
-	var agentTelemetry string
-	for _, p := range state.Panes {
-		if p.IsActive && p.AgentBadge != "" {
-			agentTelemetry = fmt.Sprintf(" | Agent: %s", p.AgentBadge)
-			break
-		}
-	}
-
-	// Context-aware dynamic footer based on current input mode
-	var footerText string
-	isPrefix := c.inputHandler != nil && c.inputHandler.InPrefix()
-
-	if isPrefix {
-		footerText = fmt.Sprintf(" [PREFIX] s/v/e: Split | h/j/k/l: Nav | w: Swap | t: Layout | z: Zoom | d: Detach | x: Close | Esc: Cancel%s", agentTelemetry)
-	} else if state.Mode == protocol.ModeNormal {
-		footerText = fmt.Sprintf(" [NORMAL] i/Enter: Insert | h/j/k/l: Nav | s/v/e: Split | w: Swap | t: Layout | z: Zoom | d: Detach | x: Close | ?: Help%s", agentTelemetry)
-	} else if state.Mode == protocol.ModeResize {
-		footerText = fmt.Sprintf(" [RESIZE] h/j/k/l: Adjust Size | Enter/Esc: Normal Mode%s", agentTelemetry)
-	} else {
-		// INSERT Mode
-		leaderHint := "Space+Space: Normal Mode"
-		if c.inputHandler != nil && c.inputHandler.PrefixMode == "prefix" {
-			switch c.inputHandler.LeaderKey {
-			case 0x02:
-				leaderHint = "^B: Prefix"
-			case 0x01:
-				leaderHint = "^A: Prefix"
-			case 0x00:
-				leaderHint = "^Space: Prefix"
-			default:
-				leaderHint = fmt.Sprintf("%c: Prefix", c.inputHandler.LeaderKey)
-			}
-		}
-		footerText = fmt.Sprintf(" [INSERT] %s | Click to Focus | Drag Borders to Resize%s", leaderHint, agentTelemetry)
-	}
-
-	b.WriteString(footerText)
-	if cols > len(footerText) {
-		b.WriteString(strings.Repeat(" ", cols-len(footerText)))
-	}
-	b.WriteString("\033[0m")
-
-	// Position cursor inside active pane viewport
-	activeY := 2
-	activeX := 1
-	hasBorders := len(state.Panes) > 1 && !state.IsMonocle
-	for _, p := range state.Panes {
-		if p.IsActive {
-			if comp, ok := c.compositors[p.ID]; ok && comp != nil {
-				activeY = comp.curRow + comp.offY - 1
-				activeX = comp.curCol + comp.offX - 1
-			} else if hasBorders {
-				activeY = p.Y + 2
-				activeX = p.X + 2
-			} else {
-				activeY = p.Y + 1
-				activeX = p.X + 1
-			}
-			break
-		}
-	}
-	b.WriteString(fmt.Sprintf("\033[%d;%dH", activeY, activeX))
-
-	os.Stdout.WriteString(b.String())
+	out, sizeChanged := c.chrome.Render(state, cols, rows, inPrefix, leaderHint, compositors)
+	os.Stdout.WriteString(out)
 
 	// If command palette is open and screen size changed, re-render it at new centered coordinates
-	if c.palette != nil && sizeChanged {
+	c.mu.Lock()
+	hasPalette := c.palette != nil
+	c.mu.Unlock()
+	if hasPalette && sizeChanged {
 		c.renderPalette()
 	}
 }
 
-// formatHeaderStats selects the best fitting system stats representation for available header space.
-func formatHeaderStats(st sysstats.Stats, availSpace int, headerBg, headerFg string) (string, string) {
-	full := st.Format()
-	compact := st.FormatCompact()
-	short := fmt.Sprintf("CPU %.0f%%", st.CPUPercent)
-
-	if availSpace >= len(full)+2 {
-		return full, st.FormatANSI(headerBg, headerFg)
+func (c *Client) getLeaderHint() string {
+	if c.inputHandler == nil || c.inputHandler.PrefixMode != "prefix" {
+		return "Space+Space: Normal Mode"
 	}
-	if availSpace >= len(compact)+2 {
-		return compact, st.FormatANSI(headerBg, headerFg)
+	switch c.inputHandler.LeaderKey {
+	case 0x02:
+		return "^B: Prefix"
+	case 0x01:
+		return "^A: Prefix"
+	case 0x00:
+		return "^Space: Prefix"
+	default:
+		return fmt.Sprintf("%c: Prefix", c.inputHandler.LeaderKey)
 	}
-	if availSpace >= len(short)+2 {
-		return short, short
-	}
-	return "", ""
 }
 
-// renderTopStats writes an in-place update of CPU and RAM telemetry on Row 1 without disturbing cursor position or pane buffers.
+
+
+// renderTopStats writes an in-place telemetry update on Row 1 without disturbing cursor position or pane buffers.
 func (c *Client) renderTopStats() {
 	c.mu.Lock()
-	if !c.isRunning || c.showHelp || c.palette != nil || len(c.scrollbackLines) > 0 || c.sysStatsCollector == nil {
+	if !c.isRunning || c.helpModal.IsVisible() || c.palette != nil || c.scrollback.Active() {
 		c.mu.Unlock()
 		return
 	}
 	cols := c.cols
 	state := c.lastState
-	cfg := c.Config
+	inPrefix := c.inputHandler != nil && c.inputHandler.InPrefix()
 	c.mu.Unlock()
 
-	if cols < 40 {
-		return
+	if out := c.chrome.RenderTopStats(state, cols, inPrefix); out != "" {
+		os.Stdout.WriteString(out)
 	}
-
-	headerBg := "\033[48;5;236m"
-	headerFg := "\033[38;5;255m"
-	if cfg != nil && cfg.Theme.StatusBarBg != "" {
-		headerBg = cfg.Theme.StatusBarBg
-	}
-	if cfg != nil && cfg.Theme.StatusBarFg != "" {
-		headerFg = cfg.Theme.StatusBarFg
-	}
-
-	// Calculate printed header prefix length
-	modeText := string(state.Mode)
-	if c.inputHandler != nil && c.inputHandler.InPrefix() {
-		modeText = "PREFIX"
-	}
-	printedHeaderLen := len(modeText) + 2 + len(state.SessionName) + 12
-
-	wsNames := make(map[int]string)
-	for _, ws := range state.Workspaces {
-		wsNames[ws.ID] = ws.Name
-	}
-	for i := 1; i <= 9; i++ {
-		name := wsNames[i]
-		hasCustomName := name != "" && name != fmt.Sprintf("ws-%d", i) && (i != 1 || name != "main")
-		tabLabel := fmt.Sprintf("%d", i)
-		if hasCustomName {
-			tabLabel = fmt.Sprintf("%d:%s", i, name)
-		}
-		if i == state.ActiveWorkspace {
-			printedHeaderLen += len(tabLabel) + 3
-		} else if i <= state.TotalWorkspaces {
-			printedHeaderLen += len(tabLabel) + 2
-		}
-	}
-
-	layoutStr := strings.ToUpper(state.LayoutType)
-	if layoutStr == "" || layoutStr == "BSP" {
-		layoutStr = "BSP"
-	} else if layoutStr == "MASTER_STACK" {
-		layoutStr = "MASTER"
-	} else if layoutStr == "GRID" {
-		layoutStr = "GRID"
-	}
-	layoutBadge := fmt.Sprintf(" <%s> ", layoutStr)
-
-	st := c.sysStatsCollector.Stats()
-	avail := cols - printedHeaderLen - len(layoutBadge)
-	statsPlain, statsANSI := formatHeaderStats(st, avail, headerBg, headerFg)
-	if statsPlain == "" {
-		return
-	}
-
-	rightLen := len(statsPlain) + 1 + len(layoutBadge)
-	startCol := cols - rightLen + 1
-	if startCol <= printedHeaderLen {
-		return
-	}
-
-	var b strings.Builder
-	b.WriteString("\0337") // Save hardware cursor
-	b.WriteString(fmt.Sprintf("\033[1;%dH", startCol))
-	b.WriteString(headerBg + headerFg)
-	b.WriteString(statsANSI + " ")
-	b.WriteString("\033[1m\033[38;5;51m" + layoutBadge + "\033[0m")
-	b.WriteString("\0338") // Restore hardware cursor
-	os.Stdout.WriteString(b.String())
 }
 
 // renderScrollback renders the scrollback buffer lines and navigation footer.
 func (c *Client) renderScrollback() {
 	c.mu.Lock()
-	lines := c.scrollbackLines
-	offset := c.scrollOffset
 	cols := c.cols
 	rows := c.rows
 	c.mu.Unlock()
 
-	var b strings.Builder
-	b.WriteString("\0337") // Save cursor
-
-	viewHeight := rows - 2
-	if viewHeight < 1 {
-		viewHeight = 1
-	}
-
-	totalLines := len(lines)
-	endIdx := totalLines - offset
-	startIdx := endIdx - viewHeight
-	if startIdx < 0 {
-		startIdx = 0
-	}
-	if endIdx < 0 {
-		endIdx = 0
-	}
-	if endIdx > totalLines {
-		endIdx = totalLines
-	}
-
-	// Render lines in the viewport
-	row := 2
-	for i := startIdx; i < endIdx && row < rows; i++ {
-		line := lines[i]
-		if len(line) > cols {
-			line = line[:cols]
-		}
-		b.WriteString(fmt.Sprintf("\033[%d;1H\033[2K%s", row, line))
-		row++
-	}
-	// Clear any remaining lines in viewport
-	for ; row < rows; row++ {
-		b.WriteString(fmt.Sprintf("\033[%d;1H\033[2K", row))
-	}
-
-	// Footer banner
-	bannerBg := "\033[48;5;166m\033[38;5;255m" // Orange banner default
-	status := fmt.Sprintf(" -- SCROLLBACK [%d/%d] -- (k/j: line, ^u/^d: page, g/G: top/bottom, y: yank, q: exit) ",
-		totalLines-offset, totalLines)
-	if c.yankToast != "" {
-		bannerBg = "\033[48;5;28m\033[38;5;255m\033[1m" // Bright green banner for toast confirmation
-		status = fmt.Sprintf(" %s ", c.yankToast)
-	}
-
-	b.WriteString(fmt.Sprintf("\033[%d;1H%s", rows, bannerBg))
-	b.WriteString(status)
-	if cols > len(status) {
-		b.WriteString(strings.Repeat(" ", cols-len(status)))
-	}
-	b.WriteString("\033[0m")
-
-	b.WriteString("\0338") // Restore cursor
-	os.Stdout.WriteString(b.String())
+	os.Stdout.WriteString(c.scrollback.Render(cols, rows))
 }
 
-// yankScrollback copies visible scrollback lines to the clipboard using OSC 52.
+// yankScrollback copies visible scrollback lines to the clipboard using OSC 52 and system utilities.
 func (c *Client) yankScrollback() {
 	c.mu.Lock()
-	lines := c.scrollbackLines
-	offset := c.scrollOffset
 	rows := c.rows
+	text, numLines := c.scrollback.VisibleText(rows)
 	c.mu.Unlock()
 
-	viewHeight := rows - 2
-	totalLines := len(lines)
-	endIdx := totalLines - offset
-	startIdx := endIdx - viewHeight
-	if startIdx < 0 {
-		startIdx = 0
-	}
-	if endIdx > totalLines {
-		endIdx = totalLines
-	}
-
-	var visibleText string
-	numLines := 0
-	if startIdx < endIdx {
-		numLines = endIdx - startIdx
-		visibleText = strings.Join(lines[startIdx:endIdx], "\n")
-	}
-
-	if visibleText != "" {
-		copyToClipboard(visibleText)
+	if text != "" {
+		copyToClipboard(text)
 	}
 
 	c.mu.Lock()
-	c.yankToast = fmt.Sprintf("✓ Copied %d lines to clipboard", numLines)
+	c.scrollback.SetToast(fmt.Sprintf("✓ Copied %d lines to clipboard", numLines))
 	c.mu.Unlock()
 	c.renderScrollback()
 
 	go func() {
 		time.Sleep(2 * time.Second)
 		c.mu.Lock()
-		c.yankToast = ""
+		c.scrollback.ClearToast()
 		c.mu.Unlock()
 		c.renderScrollback()
 	}()
 }
 
-// copyToClipboard synchronizes text with the clipboard using OSC 52, with Wayland / X11 fallback on Linux.
-func copyToClipboard(text string) {
-	b64 := base64.StdEncoding.EncodeToString([]byte(text))
-	fmt.Printf("\033]52;c;%s\a", b64)
 
-	go func() {
-		// Try Wayland wl-copy
-		if path, err := exec.LookPath("wl-copy"); err == nil {
-			cmd := exec.Command(path)
-			cmd.Stdin = strings.NewReader(text)
-			_ = cmd.Run()
-			return
-		}
-		// Try X11 xclip
-		if path, err := exec.LookPath("xclip"); err == nil {
-			cmd := exec.Command(path, "-selection", "clipboard")
-			cmd.Stdin = strings.NewReader(text)
-			_ = cmd.Run()
-			return
-		}
-		// Try X11 xsel
-		if path, err := exec.LookPath("xsel"); err == nil {
-			cmd := exec.Command(path, "--clipboard", "--input")
-			cmd.Stdin = strings.NewReader(text)
-			_ = cmd.Run()
-			return
-		}
-		// Try macOS pbcopy
-		if path, err := exec.LookPath("pbcopy"); err == nil {
-			cmd := exec.Command(path)
-			cmd.Stdin = strings.NewReader(text)
-			_ = cmd.Run()
-			return
-		}
-	}()
-}
 
 // renderPalette draws an interactive floating overlay box centered on the terminal screen.
 func (c *Client) renderPalette() {
-	if c.palette == nil {
-		return
-	}
-
 	c.mu.Lock()
+	pal := c.palette
 	cols := c.cols
 	rows := c.rows
 	c.mu.Unlock()
 
-	items := c.palette.Filter()
-	boxWidth := 72
-	if boxWidth > cols-4 {
-		boxWidth = cols - 4
+	if pal == nil {
+		return
 	}
-	if boxWidth < 30 {
-		boxWidth = 30
-	}
-
-	maxVisibleItems := 8
-	boxHeight := maxVisibleItems + 4
-
-	startX := (cols - boxWidth) / 2
-	startY := (rows - boxHeight) / 2
-	if startX < 1 {
-		startX = 1
-	}
-	if startY < 2 {
-		startY = 2
-	}
-
-	var b strings.Builder
-	b.WriteString("\0337") // Save cursor
-
-	// If the bounding box moved or changed size, clear the old bounding area first
-	if c.prevPaletteH > 0 && (c.prevPaletteX != startX || c.prevPaletteY != startY || c.prevPaletteW != boxWidth || c.prevPaletteH != boxHeight) {
-		for y := c.prevPaletteY; y < c.prevPaletteY+c.prevPaletteH; y++ {
-			b.WriteString(fmt.Sprintf("\033[%d;%dH%s", y, c.prevPaletteX, strings.Repeat(" ", c.prevPaletteW)))
-		}
-	}
-	c.prevPaletteX = startX
-	c.prevPaletteY = startY
-	c.prevPaletteW = boxWidth
-	c.prevPaletteH = boxHeight
-
-	// Palette Border & Colors: Deep Blue background (237) and Cyan borders (38;5;51)
-	bg := "\033[48;5;235m"
-	fg := "\033[38;5;255m"
-	borderFg := "\033[38;5;51m"
-	reset := "\033[0m"
-
-	// Adjust scroll window so SelectedIndex is always visible
-	c.palette.AdjustScroll(maxVisibleItems, len(items))
-
-	// 1. Top border with title and item count
-	title := " Command Palette "
-	countBadge := ""
-	if len(items) > 0 {
-		countBadge = fmt.Sprintf(" [%d/%d] ", c.palette.SelectedIndex+1, len(items))
-	}
-	dashes := boxWidth - 2 - len(title) - len(countBadge)
-	if dashes < 0 {
-		dashes = 0
-	}
-	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s┌─%s%s%s%s%s%s┐%s",
-		startY, startX, bg, borderFg, fg, title, borderFg, strings.Repeat("─", dashes), fg, countBadge, reset))
-
-	// 2. Query input line
-	queryPrompt := fmt.Sprintf("> %s_", c.palette.Query)
-	padQuery := boxWidth - 4 - len(queryPrompt)
-	if padQuery < 0 {
-		padQuery = 0
-	}
-	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s│ %s\033[1m%s\033[0m%s%s%s│%s",
-		startY+1, startX, bg, borderFg, fg, queryPrompt, bg, strings.Repeat(" ", padQuery), borderFg, reset))
-
-	// 3. Separator with scroll-up indicator
-	scrollUpInd := "─"
-	if c.palette.ScrollOffset > 0 {
-		scrollUpInd = " ▲ more above ─"
-	}
-	sepDashes := boxWidth - 2 - len(scrollUpInd)
-	if sepDashes < 0 {
-		sepDashes = 0
-	}
-	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s├%s%s┤%s",
-		startY+2, startX, bg, borderFg, scrollUpInd, strings.Repeat("─", sepDashes), reset))
-
-	// 4. Fixed height scrolling item slots
-	for i := 0; i < maxVisibleItems; i++ {
-		slotY := startY + 3 + i
-		itemIdx := c.palette.ScrollOffset + i
-		if itemIdx < len(items) {
-			item := items[itemIdx]
-			prefix := "  "
-			lineBg := bg
-			lineFg := fg
-			if itemIdx == c.palette.SelectedIndex {
-				prefix = "> "
-				lineBg = "\033[48;5;24m" // Highlighted dark cyan
-				lineFg = "\033[1m\033[38;5;255m"
-			}
-
-			lineText := fmt.Sprintf("%s%-22s %s", prefix, item.Title, item.Description)
-			if len(lineText) > boxWidth-4 {
-				lineText = lineText[:boxWidth-4]
-			}
-			padItem := boxWidth - 2 - len(lineText)
-			if padItem < 0 {
-				padItem = 0
-			}
-
-			b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s│%s%s%s%s%s│%s",
-				slotY, startX, borderFg, lineBg, lineFg, lineText, strings.Repeat(" ", padItem), reset, borderFg, reset))
-		} else {
-			// Clean background padding for empty slot
-			padEmpty := boxWidth - 2
-			b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s│%s%s│%s",
-				slotY, startX, borderFg, bg, strings.Repeat(" ", padEmpty), borderFg, reset))
-		}
-	}
-
-	// 5. Bottom border with scroll-down indicator & keybinding hint
-	bottomY := startY + 3 + maxVisibleItems
-	scrollDownInd := ""
-	if c.palette.ScrollOffset+maxVisibleItems < len(items) {
-		scrollDownInd = "▼ "
-	}
-	hint := fmt.Sprintf(" %s[Esc] Close │ [Enter] Run │ [↑/↓] Select ", scrollDownInd)
-	hintDashes := boxWidth - 2 - len(hint)
-	if hintDashes < 0 {
-		hintDashes = 0
-	}
-	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s└─%s%s%s%s┘%s",
-		bottomY, startX, bg, borderFg, fg, hint, borderFg, strings.Repeat("─", hintDashes), reset))
-
-	b.WriteString("\0338") // Restore cursor
-	os.Stdout.WriteString(b.String())
+	os.Stdout.WriteString(c.paletteView.Render(pal, cols, rows))
 }
 
 // closePalette clears the palette frame, restores Normal mode, and requests daemon redraw.
 func (c *Client) closePalette() {
 	c.mu.Lock()
-	pX, pY, pW, pH := c.prevPaletteX, c.prevPaletteY, c.prevPaletteW, c.prevPaletteH
-	c.prevPaletteX, c.prevPaletteY, c.prevPaletteW, c.prevPaletteH = 0, 0, 0, 0
 	c.palette = nil
 	if c.inputHandler != nil {
 		c.inputHandler.CurrentMode = protocol.ModeNormal
 	}
 	c.mu.Unlock()
 
-	// Erase the palette bounding box on screen
-	if pH > 0 && pW > 0 {
-		var b strings.Builder
-		b.WriteString("\0337") // Save cursor
-		for y := pY; y <= pY+pH; y++ {
-			b.WriteString(fmt.Sprintf("\033[%d;%dH%s", y, pX, strings.Repeat(" ", pW)))
-		}
-		b.WriteString("\0338") // Restore cursor
-		os.Stdout.WriteString(b.String())
+	if eraseSeq, ok := c.paletteView.Clear(); ok {
+		os.Stdout.WriteString(eraseSeq)
 	}
 
 	c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeNormal)})
@@ -1500,22 +908,23 @@ func (c *Client) closePalette() {
 }
 
 func (c *Client) toggleHelpModal() {
-	if c.showHelp {
-		c.closeHelpModal()
-	} else {
-		c.showHelp = true
+	if c.helpModal.Toggle() {
 		c.renderHelpModal()
+	} else {
+		c.closeHelpModal()
 	}
 }
 
 func (c *Client) closeHelpModal() {
-	c.showHelp = false
+	c.helpModal.Hide()
 	c.mu.Lock()
 	state := c.lastState
 	c.mu.Unlock()
+
 	// Clear the screen and redraw chrome and panes
 	fmt.Print("\033[H\033[2J\033[r")
 	c.renderChrome(state)
+
 	// Request redraw from daemon to immediately repaint pane contents
 	req := protocol.ActionPayload{Action: "redraw"}
 	reqData, _ := json.Marshal(req)
@@ -1531,112 +940,7 @@ func (c *Client) renderHelpModal() {
 	rows := c.rows
 	c.mu.Unlock()
 
-	helpLines := []string{
-		"MODES & BASICS",
-		"  INSERT Mode     Direct shell typing (default mode)",
-		"  Space + Space   Enter NORMAL mode (or ^B in prefix mode)",
-		"  i, a, Enter     Return to INSERT mode",
-		"",
-		"PANE NAVIGATION & SPLITS (in Normal Mode)",
-		"  h, j, k, l      Spatial pane navigation (left, down, up, right)",
-		"  s / v / e       Split active pane: horizontal / vertical / auto",
-		"  w               Swap focused pane with next pane in tree",
-		"  H, J, K, L      Swap focused pane with spatial neighbor",
-		"  t               Cycle layout presets (BSP -> Master-Stack -> Grid)",
-		"  z               Toggle zoom / monocle (fullscreen active pane)",
-		"  r               Enter resize mode (h/j/k/l or arrow keys to resize)",
-		"  x               Close active pane process",
-		"",
-		"WORKSPACES & SESSIONS",
-		"  1 .. 9          Switch to workspace 1..9",
-		"  m <1-9>         Move active pane to workspace 1..9",
-		"  d               Detach session (leaves background daemon running)",
-		"",
-		"MOUSE & UTILITIES",
-		"  Click Pane      Focus pane | Drag border to resize split ratio",
-		"  Scroll Up       Browse scrollback history (vi motions: j/k, y: yank)",
-		"  : or Space      Open fuzzy searchable command palette",
-		"  ?               Toggle this help screen",
-	}
-
-	boxWidth := 74
-	if boxWidth > cols-4 {
-		boxWidth = cols - 4
-	}
-	if boxWidth < 30 {
-		boxWidth = 30
-	}
-
-	contentLines := len(helpLines)
-	boxHeight := contentLines + 4
-	if boxHeight > rows-2 {
-		boxHeight = rows - 2
-	}
-
-	startX := (cols - boxWidth) / 2
-	startY := (rows - boxHeight) / 2
-	if startX < 1 {
-		startX = 1
-	}
-	if startY < 2 {
-		startY = 2
-	}
-
-	var b strings.Builder
-	b.WriteString("\0337") // Save cursor
-
-	borderFg := "\033[1m\033[38;5;51m" // Bright Cyan
-	bg := "\033[48;5;236m"
-	fg := "\033[38;5;255m"
-	dimFg := "\033[38;5;244m"
-	headerFg := "\033[1m\033[38;5;220m" // Gold / Yellow
-	reset := "\033[0m"
-
-	// Top border
-	title := " dajimux Quick Reference "
-	dashCount := boxWidth - 2 - len(title)
-	if dashCount < 0 {
-		dashCount = 0
-	}
-	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s┌%s%s┐%s", startY, startX, bg, borderFg, title, strings.Repeat("─", dashCount), reset))
-
-	// Content lines
-	visibleContent := boxHeight - 3
-	for i := 0; i < visibleContent; i++ {
-		row := startY + 1 + i
-		line := ""
-		if i < len(helpLines) {
-			line = helpLines[i]
-		}
-		currentFg := fg
-		if strings.HasPrefix(line, "MODES") || strings.HasPrefix(line, "PANE") || strings.HasPrefix(line, "WORKSPACES") || strings.HasPrefix(line, "MOUSE") {
-			currentFg = headerFg
-		}
-
-		lineWidth := len(line)
-		if lineWidth > boxWidth-4 {
-			line = line[:boxWidth-4]
-			lineWidth = boxWidth - 4
-		}
-		padding := boxWidth - 2 - lineWidth - 2
-		if padding < 0 {
-			padding = 0
-		}
-		b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s│%s  %s%s%s%s│%s",
-			row, startX, bg, borderFg, reset+bg, currentFg, line, strings.Repeat(" ", padding), borderFg, reset))
-	}
-
-	// Bottom border with dismiss prompt
-	dismiss := " Press Esc, q, or ? to dismiss "
-	bottomDashes := boxWidth - 2 - len(dismiss)
-	if bottomDashes < 0 {
-		bottomDashes = 0
-	}
-	b.WriteString(fmt.Sprintf("\033[%d;%dH%s%s└%s%s%s%s┘%s",
-		startY+boxHeight-1, startX, bg, borderFg, dimFg, dismiss, borderFg, strings.Repeat("─", bottomDashes), reset))
-
-	b.WriteString("\0338") // Restore cursor
-	os.Stdout.WriteString(b.String())
+	os.Stdout.WriteString(c.helpModal.Render(cols, rows))
 }
 
 func min(a, b int) int {
