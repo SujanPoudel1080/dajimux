@@ -61,3 +61,47 @@ func TestRegistryNilAndEmptySafety(t *testing.T) {
 		t.Errorf("expected 0 commands registered, got %d", len(r.Commands()))
 	}
 }
+
+func TestBuildDefaultRegistry(t *testing.T) {
+	reg := BuildDefaultRegistry()
+
+	expectedCommands := []string{
+		"attach", "a", "resume",
+		"list", "ls",
+		"daemon",
+		"kill-server", "stop",
+		"kill-session",
+		"rename-session",
+		"session",
+		"restore",
+		"service",
+		"mcp",
+		"config",
+		"completion",
+		"man",
+		"agent",
+		"msg",
+		"pane",
+		"peer",
+		"layout",
+		"workspace", "ws",
+		"version", "--version", "-v",
+		"help", "--help", "-h",
+	}
+
+	for _, name := range expectedCommands {
+		cmd, ok := reg.Find(name)
+		if !ok || cmd == nil {
+			t.Errorf("expected command or alias %q to be registered", name)
+		}
+	}
+
+	// Test that version command executes without error
+	verCmd, ok := reg.Find("version")
+	if !ok {
+		t.Fatalf("expected 'version' command to exist")
+	}
+	if err := verCmd.Run(nil); err != nil {
+		t.Errorf("unexpected error running version command: %v", err)
+	}
+}
