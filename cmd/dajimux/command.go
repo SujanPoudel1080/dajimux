@@ -45,3 +45,30 @@ func (r *Registry) Find(name string) (*Command, bool) {
 func (r *Registry) Commands() []*Command {
 	return r.commands
 }
+
+// BuildDefaultRegistry registers all standard dajimux commands.
+func BuildDefaultRegistry() *Registry {
+	r := NewRegistry()
+	r.Register(newAttachCommand())
+	r.Register(newListCommand())
+	r.Register(newDaemonCommand())
+	r.Register(newStopServerCommand())
+	r.Register(newKillSessionCommand())
+	r.Register(newRenameSessionCommand())
+	r.Register(newSessionCommand())
+	r.Register(newRestoreCommand())
+	r.Register(newServiceCommand())
+	r.Register(newMCPCommand())
+	r.Register(newConfigCommand())
+	r.Register(newCompletionCommand())
+	r.Register(newManCommand())
+	r.Register(newAgentCommand())
+	r.Register(newMsgCommand())
+	r.Register(newPaneCommand())
+	r.Register(newPeerCommand())
+	r.Register(newLayoutCommand())
+	r.Register(newWorkspaceCommand())
+	r.Register(newVersionCommand())
+	r.Register(newHelpCommand())
+	return r
+}
