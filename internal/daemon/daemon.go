@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/SujanPoudel1080/dajimux/internal/bsp"
 	"github.com/SujanPoudel1080/dajimux/internal/config"
 	"github.com/SujanPoudel1080/dajimux/internal/protocol"
 	"github.com/SujanPoudel1080/dajimux/internal/state"
@@ -18,14 +17,15 @@ import (
 
 // Daemon coordinates sessions, clients, and IPC sockets.
 type Daemon struct {
-	mu             sync.RWMutex
-	SocketPath     string
-	listener       net.Listener
-	Sessions       map[string]*Session
-	DefaultSession string
-	Config         *config.Config
-	clients        map[net.Conn]*clientEntry
-	isClosing      bool
+	mu               sync.RWMutex
+	SocketPath       string
+	listener         net.Listener
+	Sessions         map[string]*Session
+	DefaultSession   string
+	Config           *config.Config
+	clients          map[net.Conn]*clientEntry
+	isClosing        bool
+	actionDispatcher *ActionDispatcher
 }
 
 type clientEntry struct {
@@ -62,11 +62,12 @@ func NewDaemonWithConfig(socketPath string, cfg *config.Config) *Daemon {
 		cfg = config.DefaultConfig()
 	}
 	return &Daemon{
-		SocketPath:     socketPath,
-		Sessions:       make(map[string]*Session),
-		DefaultSession: "main",
-		Config:         cfg,
-		clients:        make(map[net.Conn]*clientEntry),
+		SocketPath:       socketPath,
+		Sessions:         make(map[string]*Session),
+		DefaultSession:   "main",
+		Config:           cfg,
+		clients:          make(map[net.Conn]*clientEntry),
+		actionDispatcher: NewActionDispatcher(),
 	}
 }
 
@@ -164,402 +165,57 @@ func (d *Daemon) handleConnection(conn net.Conn) {
 
 		switch env.Type {
 		case protocol.MsgAttach:
-			var p protocol.AttachPayload
-			if err := json.Unmarshal(env.Payload, &p); err == nil {
-				sessName := p.SessionName
-				if sessName == "" {
-					sessName = d.DefaultSession
-				}
-				session, err := d.GetOrCreateSession(sessName, p.Cols, p.Rows)
-				if err == nil {
-					attachedSession = session
-					d.mu.Lock()
-					d.clients[conn] = &clientEntry{
-						session: session,
-						writer:  writer,
-						cols:    p.Cols,
-						rows:    p.Rows,
-					}
-					d.mu.Unlock()
-
-					// Clamp session dimensions to minimum across all attached clients
-					d.updateSessionDimensions(session)
-
-					// Send current layout state to newly attached client
-					state := session.GetLayoutState()
-					data, _ := json.Marshal(state)
-					_ = writer.Write(protocol.Envelope{
-						Type:    protocol.MsgLayoutState,
-						Payload: data,
-					})
-
-					// Forward PTY output from active pane to this client
-					go d.streamPaneOutput(writer, session)
-				}
+			session, err := d.handleAttachMsg(conn, writer, env)
+			if err == nil {
+				attachedSession = session
 			}
 
 		case protocol.MsgInput:
-			var p protocol.InputPayload
-			if err := json.Unmarshal(env.Payload, &p); err == nil {
-				if env.PaneID != "" {
-					d.mu.RLock()
-					var targetPane *Pane
-					for _, s := range d.Sessions {
-						if p := s.GetPane(env.PaneID); p != nil {
-							targetPane = p
-							break
-						}
-					}
-					d.mu.RUnlock()
-					if targetPane != nil {
-						_, _ = targetPane.Write(p.Data)
-					}
-				} else if attachedSession != nil {
-					if active := attachedSession.ActivePane(); active != nil {
-						_, _ = active.Write(p.Data)
-					}
-				}
-			}
+			d.handleInputMsg(attachedSession, env)
 
 		case protocol.MsgResize:
-			if attachedSession != nil {
-				var p protocol.ResizePayload
-				if err := json.Unmarshal(env.Payload, &p); err == nil {
-					d.mu.Lock()
-					if entry, ok := d.clients[conn]; ok {
-						entry.cols = p.Cols
-						entry.rows = p.Rows
-					}
-					d.mu.Unlock()
-					d.updateSessionDimensions(attachedSession)
-				}
-			}
+			d.handleResizeMsg(conn, attachedSession, env)
 
 		case protocol.MsgAction:
 			if attachedSession != nil {
 				var p protocol.ActionPayload
 				if err := json.Unmarshal(env.Payload, &p); err == nil {
-					d.handleAction(attachedSession, p)
+					_ = d.actionDispatcher.Dispatch(attachedSession, p)
 				}
 			}
 
 		case protocol.MsgAgentStatus:
-			sess := attachedSession
-			if sess == nil {
-				sess = d.getSessionForRequest(env.SessionID)
-			}
-			if sess != nil {
-				var p protocol.AgentStatusPayload
-				if err := json.Unmarshal(env.Payload, &p); err == nil {
-					sess.Broker.UpdateStatus(env.PaneID, p)
-				}
-			}
+			d.handleAgentStatusMsg(attachedSession, env)
 
 		case protocol.MsgAgentSend:
-			sess := attachedSession
-			if sess == nil {
-				sess = d.getSessionForRequest(env.SessionID)
-			}
-			if sess != nil {
-				var p protocol.AgentMessagePayload
-				if err := json.Unmarshal(env.Payload, &p); err == nil {
-					msg := sess.Broker.Send(p.FromPaneID, p.ToTarget, p.Content)
-					data, _ := json.Marshal(msg)
-					_ = writer.Write(protocol.Envelope{
-						Type:    protocol.MsgAgentSend,
-						Payload: data,
-					})
-				}
-			}
+			d.handleAgentSendMsg(attachedSession, writer, env)
 
 		case protocol.MsgPaneCapture:
-			sess := attachedSession
-			if sess == nil {
-				sess = d.getSessionForRequest(env.SessionID)
-			}
-			if sess != nil {
-				var p protocol.PaneCaptureRequest
-				if err := json.Unmarshal(env.Payload, &p); err == nil {
-					sess.mu.RLock()
-					targetPane := sess.Panes[p.TargetPaneID]
-					sess.mu.RUnlock()
-
-					var lines []string
-					if targetPane != nil {
-						lines = targetPane.CaptureLastLines(p.Lines)
-					}
-					res := protocol.PaneCaptureResponse{
-						TargetPaneID: p.TargetPaneID,
-						Lines:        lines,
-					}
-					data, _ := json.Marshal(res)
-					_ = writer.Write(protocol.Envelope{
-						Type:    protocol.MsgPaneCaptureRes,
-						Payload: data,
-					})
-				}
-			}
+			d.handlePaneCaptureMsg(attachedSession, writer, env)
 
 		case protocol.MsgListSessions:
-			d.mu.RLock()
-			var summaries []protocol.SessionSummary
-			for name, sess := range d.Sessions {
-				sess.mu.RLock()
-				wsCount := len(sess.Workspaces)
-				panesCount := len(sess.Panes)
-				activeWS := sess.ActiveWS
-				sess.mu.RUnlock()
-
-				clientCount := 0
-				for _, entry := range d.clients {
-					if entry.session != nil && entry.session.Name == name {
-						clientCount++
-					}
-				}
-
-				summaries = append(summaries, protocol.SessionSummary{
-					Name:            name,
-					WorkspacesCount: wsCount,
-					PanesCount:      panesCount,
-					ActiveWorkspace: activeWS,
-					AttachedClients: clientCount,
-				})
-			}
-			d.mu.RUnlock()
-
-			resData, _ := json.Marshal(protocol.ListSessionsResponse{Sessions: summaries})
-			_ = writer.Write(protocol.Envelope{
-				Type:    protocol.MsgListSessionsRes,
-				Payload: resData,
-			})
+			d.handleListSessionsMsg(writer)
 
 		case protocol.MsgListPanes:
-			var req protocol.ListPanesRequest
-			_ = json.Unmarshal(env.Payload, &req)
-
-			d.mu.RLock()
-			var panes []protocol.DetailedPaneInfo
-			for name, sess := range d.Sessions {
-				if req.SessionName != "" && req.SessionName != name {
-					continue
-				}
-				sess.mu.RLock()
-				for wsID, ws := range sess.Workspaces {
-					ws.mu.RLock()
-					activePaneID := ws.Tree.ActivePaneID
-					for _, pid := range ws.Tree.ListLeafPanes() {
-						node := ws.Tree.FindNode(pid)
-						pane := sess.Panes[pid]
-						if node != nil && pane != nil {
-							pane.mu.RLock()
-							panes = append(panes, protocol.DetailedPaneInfo{
-								SessionName: name,
-								WorkspaceID: wsID,
-								PaneID:      pid,
-								Title:       pane.Title,
-								Cwd:         pane.Cwd,
-								IsActive:    pid == activePaneID && sess.ActiveWS == wsID,
-								AgentState:  pane.AgentState,
-								AgentBadge:  pane.AgentBadge,
-								Width:       node.Rect.W,
-								Height:      node.Rect.H,
-							})
-							pane.mu.RUnlock()
-						}
-					}
-					ws.mu.RUnlock()
-				}
-				sess.mu.RUnlock()
-			}
-			d.mu.RUnlock()
-
-			resData, _ := json.Marshal(protocol.ListPanesResponse{Panes: panes})
-			_ = writer.Write(protocol.Envelope{
-				Type:    protocol.MsgListPanesRes,
-				Payload: resData,
-			})
+			d.handleListPanesMsg(writer, env)
 
 		case protocol.MsgSpawnPane:
-			var req protocol.SpawnPaneRequest
-			_ = json.Unmarshal(env.Payload, &req)
-
-			sessionName := req.SessionName
-			if sessionName == "" {
-				sessionName = "main"
-			}
-
-			d.mu.RLock()
-			sess := d.Sessions[sessionName]
-			d.mu.RUnlock()
-
-			if sess == nil {
-				resData, _ := json.Marshal(protocol.SpawnPaneResponse{
-					Success: false,
-					Error:   fmt.Sprintf("session %q not found", sessionName),
-				})
-				_ = writer.Write(protocol.Envelope{
-					Type:    protocol.MsgSpawnPaneRes,
-					Payload: resData,
-				})
-				continue
-			}
-
-			dir := bsp.SplitVertical
-			if req.Direction == "horizontal" {
-				dir = bsp.SplitHorizontal
-			}
-
-			newPane, err := sess.SpawnPane(dir, req.Cwd, req.Command)
-			if err != nil {
-				resData, _ := json.Marshal(protocol.SpawnPaneResponse{
-					Success: false,
-					Error:   err.Error(),
-				})
-				_ = writer.Write(protocol.Envelope{
-					Type:    protocol.MsgSpawnPaneRes,
-					Payload: resData,
-				})
-			} else {
-				resData, _ := json.Marshal(protocol.SpawnPaneResponse{
-					Success: true,
-					PaneID:  newPane.ID,
-				})
-				_ = writer.Write(protocol.Envelope{
-					Type:    protocol.MsgSpawnPaneRes,
-					Payload: resData,
-				})
-			}
+			d.handleSpawnPaneMsg(writer, env)
 
 		case protocol.MsgClosePane:
-			var req protocol.ClosePaneRequest
-			_ = json.Unmarshal(env.Payload, &req)
-
-			if req.PaneID == "" {
-				resData, _ := json.Marshal(protocol.ClosePaneResponse{
-					Success: false,
-					Error:   "pane_id is required",
-				})
-				_ = writer.Write(protocol.Envelope{
-					Type:    protocol.MsgClosePaneRes,
-					Payload: resData,
-				})
-				continue
-			}
-
-			err := d.ClosePaneByID(req.PaneID)
-			errStr := ""
-			if err != nil {
-				errStr = err.Error()
-			}
-			resData, _ := json.Marshal(protocol.ClosePaneResponse{
-				Success: err == nil,
-				Error:   errStr,
-			})
-			_ = writer.Write(protocol.Envelope{
-				Type:    protocol.MsgClosePaneRes,
-				Payload: resData,
-			})
+			d.handleClosePaneMsg(writer, env)
 
 		case protocol.MsgKillSession:
-			var req protocol.KillSessionRequest
-			_ = json.Unmarshal(env.Payload, &req)
-
-			if req.SessionName == "" {
-				resData, _ := json.Marshal(protocol.KillSessionResponse{
-					Success: false,
-					Error:   "session_name is required",
-				})
-				_ = writer.Write(protocol.Envelope{
-					Type:    protocol.MsgKillSessionRes,
-					Payload: resData,
-				})
-				continue
-			}
-
-			err := d.KillSession(req.SessionName)
-			errStr := ""
-			if err != nil {
-				errStr = err.Error()
-			}
-			resData, _ := json.Marshal(protocol.KillSessionResponse{
-				Success: err == nil,
-				Error:   errStr,
-			})
-			_ = writer.Write(protocol.Envelope{
-				Type:    protocol.MsgKillSessionRes,
-				Payload: resData,
-			})
+			d.handleKillSessionMsg(writer, env)
 
 		case protocol.MsgRenameSession:
-			var req protocol.RenameSessionRequest
-			_ = json.Unmarshal(env.Payload, &req)
-
-			if req.OldName == "" || req.NewName == "" {
-				resData, _ := json.Marshal(protocol.RenameSessionResponse{
-					Success: false,
-					Error:   "old_name and new_name are required",
-				})
-				_ = writer.Write(protocol.Envelope{
-					Type:    protocol.MsgRenameSessionRes,
-					Payload: resData,
-				})
-				continue
-			}
-
-			err := d.RenameSession(req.OldName, req.NewName)
-			errStr := ""
-			if err != nil {
-				errStr = err.Error()
-			}
-			resData, _ := json.Marshal(protocol.RenameSessionResponse{
-				Success: err == nil,
-				Error:   errStr,
-			})
-			_ = writer.Write(protocol.Envelope{
-				Type:    protocol.MsgRenameSessionRes,
-				Payload: resData,
-			})
+			d.handleRenameSessionMsg(writer, env)
 
 		case protocol.MsgRenameWorkspace:
-			var req protocol.RenameWorkspaceRequest
-			_ = json.Unmarshal(env.Payload, &req)
-
-			if req.NewName == "" {
-				resData, _ := json.Marshal(protocol.RenameWorkspaceResponse{
-					Success: false,
-					Error:   "new_name is required",
-				})
-				_ = writer.Write(protocol.Envelope{
-					Type:    protocol.MsgRenameWorkspaceRes,
-					Payload: resData,
-				})
-				continue
-			}
-
-			err := d.RenameWorkspace(req.SessionName, req.WorkspaceID, req.NewName)
-			errStr := ""
-			if err != nil {
-				errStr = err.Error()
-			}
-			resData, _ := json.Marshal(protocol.RenameWorkspaceResponse{
-				Success: err == nil,
-				Error:   errStr,
-			})
-			_ = writer.Write(protocol.Envelope{
-				Type:    protocol.MsgRenameWorkspaceRes,
-				Payload: resData,
-			})
+			d.handleRenameWorkspaceMsg(writer, env)
 
 		case protocol.MsgStopServer:
-			_ = writer.Write(protocol.Envelope{
-				Type:    protocol.MsgStopServerRes,
-				Payload: []byte(`"ok"`),
-			})
-			go func() {
-				time.Sleep(50 * time.Millisecond)
-				d.Stop()
-				os.Exit(0)
-			}()
+			d.handleStopServerMsg(writer)
 			return
 
 		case protocol.MsgDetach:
@@ -716,83 +372,7 @@ func (d *Daemon) streamPaneOutput(writer *protocol.EnvelopeWriter, s *Session) {
 }
 
 func (d *Daemon) handleAction(s *Session, action protocol.ActionPayload) {
-	switch action.Action {
-	case "split_h":
-		_, _ = s.SplitActive(bsp.SplitHorizontal)
-	case "split_v":
-		_, _ = s.SplitActive(bsp.SplitVertical)
-	case "split_auto":
-		_, _ = s.SplitActiveAuto()
-	case "close_pane":
-		if paneID := action.Params["pane_id"]; paneID != "" {
-			_ = s.ClosePaneByID(paneID)
-		} else {
-			_ = s.CloseActive()
-		}
-	case "nav_left":
-		s.Navigate(bsp.NavLeft)
-	case "nav_down":
-		s.Navigate(bsp.NavDown)
-	case "nav_up":
-		s.Navigate(bsp.NavUp)
-	case "nav_right":
-		s.Navigate(bsp.NavRight)
-	case "focus_pane":
-		paneID := action.Params["pane_id"]
-		if paneID != "" {
-			s.FocusPane(paneID)
-		}
-	case "swap_next":
-		_ = s.SwapActiveWithNext()
-	case "swap_left":
-		_ = s.SwapActive(bsp.NavLeft)
-	case "swap_down":
-		_ = s.SwapActive(bsp.NavDown)
-	case "swap_up":
-		_ = s.SwapActive(bsp.NavUp)
-	case "swap_right":
-		_ = s.SwapActive(bsp.NavRight)
-	case "move_pane_ws":
-		var wsNum int
-		if fmt.Sscanf(action.Params["workspace"], "%d", &wsNum); wsNum > 0 {
-			_ = s.MoveActiveToWorkspace(wsNum)
-		}
-	case "toggle_monocle":
-		s.ToggleMonocle()
-	case "switch_workspace":
-		var wsNum int
-		if fmt.Sscanf(action.Params["workspace"], "%d", &wsNum); wsNum > 0 {
-			s.SwitchWorkspace(wsNum)
-		}
-	case "resize_delta":
-		var delta float64
-		if fmt.Sscanf(action.Params["delta"], "%f", &delta); delta != 0 {
-			s.AdjustSplit(delta)
-		}
-	case "mode_change":
-		target := protocol.Mode(action.Params["target"])
-		if target != "" {
-			s.SetMode(target)
-		}
-	case "cycle_layout":
-		s.CycleLayout()
-	case "set_layout":
-		lt := bsp.LayoutType(action.Params["type"])
-		if lt != "" {
-			s.SetLayout(lt)
-		}
-	case "rename_workspace":
-		name := action.Params["name"]
-		if name != "" {
-			wsNum := s.ActiveWS
-			if action.Params["workspace"] != "" {
-				_, _ = fmt.Sscanf(action.Params["workspace"], "%d", &wsNum)
-			}
-			s.RenameWorkspace(wsNum, name)
-		}
-	case "redraw":
-		s.NotifyState()
-	}
+	_ = d.actionDispatcher.Dispatch(s, action)
 }
 
 func (d *Daemon) updateSessionDimensions(s *Session) {
