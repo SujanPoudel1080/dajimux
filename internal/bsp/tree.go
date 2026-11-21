@@ -684,6 +684,42 @@ func (t *Tree) ListLeafPanes() []string {
 	return res
 }
 
+// LeafCount returns the number of visible leaf panes in the tree.
+func (t *Tree) LeafCount() int {
+	return len(t.ListLeafPanes())
+}
+
+// HasBorders returns true if multiple panes are visible and not zoomed in monocle mode.
+func (t *Tree) HasBorders() bool {
+	return t.LeafCount() > 1 && t.MonoclePaneID == ""
+}
+
+// IsMonocle returns true if a pane is currently zoomed in monocle mode.
+func (t *Tree) IsMonocle() bool {
+	return t.MonoclePaneID != ""
+}
+
+// PaneGeometry returns the bounding box and inner usable viewport dimensions for a pane.
+func (t *Tree) PaneGeometry(paneID string) (Rect, int, int, bool) {
+	node := t.FindNode(paneID)
+	if node == nil {
+		return Rect{}, 0, 0, false
+	}
+	w := node.Rect.W
+	h := node.Rect.H
+	if t.HasBorders() {
+		w -= 2
+		h -= 2
+	}
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	return node.Rect, w, h, true
+}
+
 func (t *Tree) collectLeafNodes(node *Node) []*Node {
 	if node == nil {
 		return nil
