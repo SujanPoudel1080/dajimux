@@ -203,3 +203,56 @@ func TestLayoutPresets(t *testing.T) {
 		t.Fatalf("expected cycle back to LayoutBSP, got %s", next)
 	}
 }
+
+func TestTreeEncapsulationAndGeometry(t *testing.T) {
+	tree := NewTree("p1")
+	if tree.LeafCount() != 1 {
+		t.Errorf("expected 1 leaf, got %d", tree.LeafCount())
+	}
+	if tree.HasBorders() {
+		t.Errorf("expected single pane to not have borders")
+	}
+	if tree.IsMonocle() {
+		t.Errorf("expected tree not to be in monocle mode initially")
+	}
+
+	bounds := Rect{X: 0, Y: 1, W: 80, H: 22}
+	tree.ComputeLayout(bounds, 1)
+
+	rect, vw, vh, ok := tree.PaneGeometry("p1")
+	if !ok {
+		t.Fatalf("expected p1 geometry to be found")
+	}
+	if rect.W != 80 || rect.H != 22 {
+		t.Errorf("expected bounds 80x22, got %dx%d", rect.W, rect.H)
+	}
+	// With single pane (no borders), viewport matches bounds
+	if vw != 80 || vh != 22 {
+		t.Errorf("expected viewport 80x22, got %dx%d", vw, vh)
+	}
+
+	// Split p1 -> p2
+	_, _ = tree.Split("p1", "p2", SplitVertical, 0.5)
+	if !tree.HasBorders() {
+		t.Errorf("expected multiple panes to have borders")
+	}
+	tree.ComputeLayout(bounds, 1)
+
+	_, vw2, vh2, ok := tree.PaneGeometry("p2")
+	if !ok {
+		t.Fatalf("expected p2 geometry to be found")
+	}
+	node2 := tree.FindNode("p2")
+	// With borders, viewport is node.Rect - 2
+	expectedVW := node2.Rect.W - 2
+	expectedVH := node2.Rect.H - 2
+	if vw2 != expectedVW || vh2 != expectedVH {
+		t.Errorf("expected viewport %dx%d, got %dx%d", expectedVW, expectedVH, vw2, vh2)
+	}
+
+	// Non-existent pane
+	_, _, _, ok = tree.PaneGeometry("non-existent")
+	if ok {
+		t.Errorf("expected non-existent pane geometry to return ok=false")
+	}
+}

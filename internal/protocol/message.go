@@ -90,9 +90,36 @@ type ResizePayload struct {
 
 // ActionPayload represents window management actions (splits, navigation, workspace jump).
 type ActionPayload struct {
-	Action string            `json:"action"` // "split_h", "split_v", "close", "nav_left", etc.
+	Action string            `json:"action"` // e.g. ActionSplitH, ActionNavLeft
 	Params map[string]string `json:"params,omitempty"`
 }
+
+// Standard action identifiers used in ActionPayload.
+const (
+	ActionSplitH          = "split_h"
+	ActionSplitV          = "split_v"
+	ActionSplitAuto       = "split_auto"
+	ActionClosePane       = "close_pane"
+	ActionNavLeft         = "nav_left"
+	ActionNavDown         = "nav_down"
+	ActionNavUp           = "nav_up"
+	ActionNavRight        = "nav_right"
+	ActionFocusPane       = "focus_pane"
+	ActionSwapNext        = "swap_next"
+	ActionSwapLeft        = "swap_left"
+	ActionSwapDown        = "swap_down"
+	ActionSwapUp          = "swap_up"
+	ActionSwapRight       = "swap_right"
+	ActionMovePaneWS      = "move_pane_ws"
+	ActionToggleMonocle   = "toggle_monocle"
+	ActionSwitchWorkspace = "switch_workspace"
+	ActionResizeDelta     = "resize_delta"
+	ActionModeChange      = "mode_change"
+	ActionCycleLayout     = "cycle_layout"
+	ActionSetLayout       = "set_layout"
+	ActionRenameWorkspace = "rename_workspace"
+	ActionRedraw          = "redraw"
+)
 
 // PaneInfo contains visual layout metadata for rendering borders and headers.
 type PaneInfo struct {
