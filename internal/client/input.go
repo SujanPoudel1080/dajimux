@@ -24,18 +24,18 @@ type ActionType string
 const (
 	ActionNone            ActionType = "none"
 	ActionPassThrough     ActionType = "passthrough"
-	ActionModeChange      ActionType = "mode_change"
+	ActionModeChange      ActionType = protocol.ActionModeChange
 	ActionUndoLastChar    ActionType = "undo_last_char"
-	ActionNavLeft         ActionType = "nav_left"
-	ActionNavDown         ActionType = "nav_down"
-	ActionNavUp           ActionType = "nav_up"
-	ActionNavRight        ActionType = "nav_right"
-	ActionSplitHorizontal ActionType = "split_h"
-	ActionSplitVertical   ActionType = "split_v"
-	ActionClosePane       ActionType = "close_pane"
-	ActionToggleMonocle   ActionType = "toggle_monocle"
-	ActionSwitchWorkspace ActionType = "switch_workspace"
-	ActionResizeDelta     ActionType = "resize_delta"
+	ActionNavLeft         ActionType = protocol.ActionNavLeft
+	ActionNavDown         ActionType = protocol.ActionNavDown
+	ActionNavUp           ActionType = protocol.ActionNavUp
+	ActionNavRight        ActionType = protocol.ActionNavRight
+	ActionSplitHorizontal ActionType = protocol.ActionSplitH
+	ActionSplitVertical   ActionType = protocol.ActionSplitV
+	ActionClosePane       ActionType = protocol.ActionClosePane
+	ActionToggleMonocle   ActionType = protocol.ActionToggleMonocle
+	ActionSwitchWorkspace ActionType = protocol.ActionSwitchWorkspace
+	ActionResizeDelta     ActionType = protocol.ActionResizeDelta
 	ActionOpenPalette      ActionType = "open_palette"
 	ActionClosePalette     ActionType = "close_palette"
 	ActionPaletteType      ActionType = "palette_type"
@@ -53,18 +53,18 @@ const (
 	ActionScrollBottom     ActionType = "scroll_bottom"
 	ActionYank             ActionType = "yank"
 	ActionDetach           ActionType = "detach"
-	ActionSwapNext         ActionType = "swap_next"
-	ActionSwapLeft         ActionType = "swap_left"
-	ActionSwapDown         ActionType = "swap_down"
-	ActionSwapUp           ActionType = "swap_up"
-	ActionSwapRight        ActionType = "swap_right"
-	ActionMoveToWorkspace  ActionType = "move_pane_ws"
-	ActionCycleLayout      ActionType = "cycle_layout"
+	ActionSwapNext         ActionType = protocol.ActionSwapNext
+	ActionSwapLeft         ActionType = protocol.ActionSwapLeft
+	ActionSwapDown         ActionType = protocol.ActionSwapDown
+	ActionSwapUp           ActionType = protocol.ActionSwapUp
+	ActionSwapRight        ActionType = protocol.ActionSwapRight
+	ActionMoveToWorkspace  ActionType = protocol.ActionMovePaneWS
+	ActionCycleLayout      ActionType = protocol.ActionCycleLayout
 	ActionSetLayoutBSP     ActionType = "set_layout_bsp"
 	ActionSetLayoutMaster  ActionType = "set_layout_master_stack"
 	ActionSetLayoutGrid    ActionType = "set_layout_grid"
-	ActionRenameWorkspace  ActionType = "rename_workspace"
-	ActionSplitAuto        ActionType = "split_auto"
+	ActionRenameWorkspace  ActionType = protocol.ActionRenameWorkspace
+	ActionSplitAuto        ActionType = protocol.ActionSplitAuto
 	ActionToggleHelp       ActionType = "toggle_help"
 )
 

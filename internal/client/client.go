@@ -365,7 +365,7 @@ func (c *Client) readStdinLoop() error {
 
 		// Notify daemon of mode return (e.g. returning to INSERT after a prefix action)
 		if res.TargetMode != "" && res.Action != ActionModeChange {
-			c.sendAction("mode_change", map[string]string{
+			c.sendAction(protocol.ActionModeChange, map[string]string{
 				"target": string(res.TargetMode),
 			})
 		}
@@ -380,57 +380,57 @@ func (c *Client) readStdinLoop() error {
 			})
 
 		case ActionModeChange:
-			c.sendAction("mode_change", map[string]string{
+			c.sendAction(protocol.ActionModeChange, map[string]string{
 				"target": string(res.TargetMode),
 			})
 
 		case ActionNavLeft:
-			c.sendAction("nav_left", nil)
+			c.sendAction(protocol.ActionNavLeft, nil)
 		case ActionNavDown:
-			c.sendAction("nav_down", nil)
+			c.sendAction(protocol.ActionNavDown, nil)
 		case ActionNavUp:
-			c.sendAction("nav_up", nil)
+			c.sendAction(protocol.ActionNavUp, nil)
 		case ActionNavRight:
-			c.sendAction("nav_right", nil)
+			c.sendAction(protocol.ActionNavRight, nil)
 
 		case ActionSwapNext:
-			c.sendAction("swap_next", nil)
+			c.sendAction(protocol.ActionSwapNext, nil)
 		case ActionSwapLeft:
-			c.sendAction("swap_left", nil)
+			c.sendAction(protocol.ActionSwapLeft, nil)
 		case ActionSwapDown:
-			c.sendAction("swap_down", nil)
+			c.sendAction(protocol.ActionSwapDown, nil)
 		case ActionSwapUp:
-			c.sendAction("swap_up", nil)
+			c.sendAction(protocol.ActionSwapUp, nil)
 		case ActionSwapRight:
-			c.sendAction("swap_right", nil)
+			c.sendAction(protocol.ActionSwapRight, nil)
 
 		case ActionMoveToWorkspace:
-			c.sendAction("move_pane_ws", map[string]string{
+			c.sendAction(protocol.ActionMovePaneWS, map[string]string{
 				"workspace": fmt.Sprintf("%d", res.WorkspaceNum),
 			})
 
 		case ActionSplitHorizontal:
-			c.sendAction("split_h", nil)
+			c.sendAction(protocol.ActionSplitH, nil)
 		case ActionSplitVertical:
-			c.sendAction("split_v", nil)
+			c.sendAction(protocol.ActionSplitV, nil)
 		case ActionSplitAuto:
-			c.sendAction("split_auto", nil)
+			c.sendAction(protocol.ActionSplitAuto, nil)
 		case ActionCycleLayout:
-			c.sendAction("cycle_layout", nil)
+			c.sendAction(protocol.ActionCycleLayout, nil)
 		case ActionClosePane:
-			c.sendAction("close_pane", nil)
+			c.sendAction(protocol.ActionClosePane, nil)
 		case ActionToggleMonocle:
-			c.sendAction("toggle_monocle", nil)
+			c.sendAction(protocol.ActionToggleMonocle, nil)
 		case ActionToggleHelp:
 			c.toggleHelpModal()
 
 		case ActionSwitchWorkspace:
-			c.sendAction("switch_workspace", map[string]string{
+			c.sendAction(protocol.ActionSwitchWorkspace, map[string]string{
 				"workspace": fmt.Sprintf("%d", res.WorkspaceNum),
 			})
 
 		case ActionResizeDelta:
-			c.sendAction("resize_delta", map[string]string{
+			c.sendAction(protocol.ActionResizeDelta, map[string]string{
 				"delta": fmt.Sprintf("%.2f", res.ResizeDelta),
 			})
 
@@ -542,7 +542,7 @@ func (c *Client) detach() {
 }
 
 func (c *Client) enterScrollback() {
-	c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeScrollback)})
+	c.sendAction(protocol.ActionModeChange, map[string]string{"target": string(protocol.ModeScrollback)})
 	c.mu.Lock()
 	activeID := c.lastState.ActivePaneID
 	c.mu.Unlock()
@@ -561,9 +561,9 @@ func (c *Client) exitScrollback() {
 	c.mu.Lock()
 	c.scrollback.Clear()
 	c.mu.Unlock()
-	c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeNormal)})
+	c.sendAction(protocol.ActionModeChange, map[string]string{"target": string(protocol.ModeNormal)})
 	c.renderChrome(c.lastState)
-	req := protocol.ActionPayload{Action: "redraw"}
+	req := protocol.ActionPayload{Action: protocol.ActionRedraw}
 	reqData, _ := json.Marshal(req)
 	_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
 		Type:    protocol.MsgAction,
@@ -635,13 +635,13 @@ func (c *Client) handleMouseEvent(evt *MouseEvent) {
 
 			if absDx >= absDy && absDx > 2 {
 				delta := float64(dx) / float64(cols)
-				c.sendAction("resize_delta", map[string]string{
+				c.sendAction(protocol.ActionResizeDelta, map[string]string{
 					"delta": fmt.Sprintf("%.2f", delta),
 				})
 				c.dragStart.X = evt.X
 			} else if absDy > absDx && absDy > 1 {
 				delta := float64(dy) / float64(rows)
-				c.sendAction("resize_delta", map[string]string{
+				c.sendAction(protocol.ActionResizeDelta, map[string]string{
 					"delta": fmt.Sprintf("%.2f", delta),
 				})
 				c.dragStart.Y = evt.Y
@@ -662,14 +662,14 @@ func (c *Client) handleMouseEvent(evt *MouseEvent) {
 		if evt.Y == 1 {
 			wsNum := c.findWorkspaceFromHeaderClick(evt.X)
 			if wsNum > 0 {
-				c.sendAction("switch_workspace", map[string]string{
+				c.sendAction(protocol.ActionSwitchWorkspace, map[string]string{
 					"workspace": fmt.Sprintf("%d", wsNum),
 				})
 				return
 			}
 			// Clicking layout badge on the far right cycles the layout preset
 			if evt.X >= cols-12 {
-				c.sendAction("cycle_layout", nil)
+				c.sendAction(protocol.ActionCycleLayout, nil)
 				return
 			}
 			return
@@ -687,7 +687,7 @@ func (c *Client) handleMouseEvent(evt *MouseEvent) {
 					newState := c.lastState
 					c.mu.Unlock()
 					c.renderChrome(newState)
-					c.sendAction("focus_pane", map[string]string{
+					c.sendAction(protocol.ActionFocusPane, map[string]string{
 						"pane_id": p.ID,
 					})
 				}
@@ -701,33 +701,33 @@ func (c *Client) handleMouseEvent(evt *MouseEvent) {
 func (c *Client) executePaletteItem(item PaletteItem) {
 	switch item.Action {
 	case ActionSplitAuto:
-		c.sendAction("split_auto", nil)
+		c.sendAction(protocol.ActionSplitAuto, nil)
 	case ActionSplitVertical:
-		c.sendAction("split_v", nil)
+		c.sendAction(protocol.ActionSplitV, nil)
 	case ActionSplitHorizontal:
-		c.sendAction("split_h", nil)
+		c.sendAction(protocol.ActionSplitH, nil)
 	case ActionSwapNext:
-		c.sendAction("swap_next", nil)
+		c.sendAction(protocol.ActionSwapNext, nil)
 	case ActionSwapLeft:
-		c.sendAction("swap_left", nil)
+		c.sendAction(protocol.ActionSwapLeft, nil)
 	case ActionSwapDown:
-		c.sendAction("swap_down", nil)
+		c.sendAction(protocol.ActionSwapDown, nil)
 	case ActionSwapUp:
-		c.sendAction("swap_up", nil)
+		c.sendAction(protocol.ActionSwapUp, nil)
 	case ActionSwapRight:
-		c.sendAction("swap_right", nil)
+		c.sendAction(protocol.ActionSwapRight, nil)
 	case ActionMoveToWorkspace:
-		c.sendAction("move_pane_ws", map[string]string{
+		c.sendAction(protocol.ActionMovePaneWS, map[string]string{
 			"workspace": fmt.Sprintf("%d", item.Workspace),
 		})
 	case ActionCycleLayout:
-		c.sendAction("cycle_layout", nil)
+		c.sendAction(protocol.ActionCycleLayout, nil)
 	case ActionSetLayoutBSP:
-		c.sendAction("set_layout", map[string]string{"type": "bsp"})
+		c.sendAction(protocol.ActionSetLayout, map[string]string{"type": "bsp"})
 	case ActionSetLayoutMaster:
-		c.sendAction("set_layout", map[string]string{"type": "master_stack"})
+		c.sendAction(protocol.ActionSetLayout, map[string]string{"type": "master_stack"})
 	case ActionSetLayoutGrid:
-		c.sendAction("set_layout", map[string]string{"type": "grid"})
+		c.sendAction(protocol.ActionSetLayout, map[string]string{"type": "grid"})
 	case ActionRenameWorkspace:
 		query := strings.TrimSpace(c.palette.Query)
 		// Extract name if query starts with "rename" or has words
@@ -741,19 +741,19 @@ func (c *Client) executePaletteItem(item PaletteItem) {
 		if name == "" {
 			name = fmt.Sprintf("work-%d", c.lastState.ActiveWorkspace)
 		}
-		c.sendAction("rename_workspace", map[string]string{
+		c.sendAction(protocol.ActionRenameWorkspace, map[string]string{
 			"name": name,
 		})
 	case ActionClosePane:
-		c.sendAction("close_pane", nil)
+		c.sendAction(protocol.ActionClosePane, nil)
 	case ActionToggleMonocle:
-		c.sendAction("toggle_monocle", nil)
+		c.sendAction(protocol.ActionToggleMonocle, nil)
 	case ActionSwitchWorkspace:
-		c.sendAction("switch_workspace", map[string]string{
+		c.sendAction(protocol.ActionSwitchWorkspace, map[string]string{
 			"workspace": fmt.Sprintf("%d", item.Workspace),
 		})
 	case ActionModeChange:
-		c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeResize)})
+		c.sendAction(protocol.ActionModeChange, map[string]string{"target": string(protocol.ModeResize)})
 	case ActionEnterScrollback:
 		c.enterScrollback()
 	case ActionToggleHelp:
@@ -895,11 +895,11 @@ func (c *Client) closePalette() {
 		os.Stdout.WriteString(eraseSeq)
 	}
 
-	c.sendAction("mode_change", map[string]string{"target": string(protocol.ModeNormal)})
+	c.sendAction(protocol.ActionModeChange, map[string]string{"target": string(protocol.ModeNormal)})
 	c.renderChrome(c.lastState)
 
 	// Send redraw action to daemon to immediately repaint pane contents
-	req := protocol.ActionPayload{Action: "redraw"}
+	req := protocol.ActionPayload{Action: protocol.ActionRedraw}
 	reqData, _ := json.Marshal(req)
 	_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
 		Type:    protocol.MsgAction,
@@ -926,7 +926,7 @@ func (c *Client) closeHelpModal() {
 	c.renderChrome(state)
 
 	// Request redraw from daemon to immediately repaint pane contents
-	req := protocol.ActionPayload{Action: "redraw"}
+	req := protocol.ActionPayload{Action: protocol.ActionRedraw}
 	reqData, _ := json.Marshal(req)
 	_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
 		Type:    protocol.MsgAction,

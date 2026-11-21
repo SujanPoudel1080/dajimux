@@ -220,13 +220,13 @@ func runLayoutCmd(args []string) {
 	var action protocol.ActionPayload
 	switch sub {
 	case "cycle":
-		action = protocol.ActionPayload{Action: "cycle_layout"}
+		action = protocol.ActionPayload{Action: protocol.ActionCycleLayout}
 	case "bsp":
-		action = protocol.ActionPayload{Action: "set_layout", Params: map[string]string{"type": "bsp"}}
+		action = protocol.ActionPayload{Action: protocol.ActionSetLayout, Params: map[string]string{"type": "bsp"}}
 	case "master", "master-stack":
-		action = protocol.ActionPayload{Action: "set_layout", Params: map[string]string{"type": "master_stack"}}
+		action = protocol.ActionPayload{Action: protocol.ActionSetLayout, Params: map[string]string{"type": "master_stack"}}
 	case "grid":
-		action = protocol.ActionPayload{Action: "set_layout", Params: map[string]string{"type": "grid"}}
+		action = protocol.ActionPayload{Action: protocol.ActionSetLayout, Params: map[string]string{"type": "grid"}}
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown layout: %s. Use: cycle, bsp, master, grid\n", sub)
 		os.Exit(1)
@@ -268,7 +268,7 @@ func runWorkspaceCmd(args []string) {
 			params["workspace"] = ws
 		}
 		data, _ := json.Marshal(protocol.ActionPayload{
-			Action: "rename_workspace",
+			Action: protocol.ActionRenameWorkspace,
 			Params: params,
 		})
 		if err := sendEnvelopeOnce(sockPath, protocol.Envelope{Type: protocol.MsgAction, Payload: data}); err != nil {
@@ -283,7 +283,7 @@ func runWorkspaceCmd(args []string) {
 			os.Exit(1)
 		}
 		data, _ := json.Marshal(protocol.ActionPayload{
-			Action: "switch_workspace",
+			Action: protocol.ActionSwitchWorkspace,
 			Params: map[string]string{"workspace": args[1]},
 		})
 		if err := sendEnvelopeOnce(sockPath, protocol.Envelope{Type: protocol.MsgAction, Payload: data}); err != nil {
