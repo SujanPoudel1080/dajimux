@@ -17,7 +17,7 @@ func TestActionDispatcherDispatch(t *testing.T) {
 
 	// 1. Test mode change
 	err = dispatcher.Dispatch(sess, protocol.ActionPayload{
-		Action: "mode_change",
+		Action: protocol.ActionModeChange,
 		Params: map[string]string{"target": string(protocol.ModeNormal)},
 	})
 	if err != nil {
@@ -29,7 +29,7 @@ func TestActionDispatcherDispatch(t *testing.T) {
 
 	// 2. Test cycle layout
 	err = dispatcher.Dispatch(sess, protocol.ActionPayload{
-		Action: "cycle_layout",
+		Action: protocol.ActionCycleLayout,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error for cycle_layout: %v", err)
@@ -37,7 +37,7 @@ func TestActionDispatcherDispatch(t *testing.T) {
 
 	// 3. Test rename workspace
 	err = dispatcher.Dispatch(sess, protocol.ActionPayload{
-		Action: "rename_workspace",
+		Action: protocol.ActionRenameWorkspace,
 		Params: map[string]string{"name": "code"},
 	})
 	if err != nil {
@@ -57,7 +57,7 @@ func TestActionDispatcherDispatch(t *testing.T) {
 
 	// 5. Test nil session
 	err = dispatcher.Dispatch(nil, protocol.ActionPayload{
-		Action: "redraw",
+		Action: protocol.ActionRedraw,
 	})
 	if err == nil {
 		t.Fatalf("expected error for nil session, got nil")

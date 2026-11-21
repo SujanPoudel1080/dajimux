@@ -201,12 +201,11 @@ func (d *Daemon) handleListPanesMsg(writer *protocol.EnvelopeWriter, env *protoc
 		}
 		sess.mu.RLock()
 		for wsID, ws := range sess.Workspaces {
-			ws.mu.RLock()
-			activePaneID := ws.Tree.ActivePaneID
-			for _, pid := range ws.Tree.ListLeafPanes() {
-				node := ws.Tree.FindNode(pid)
+			activePaneID := ws.ActivePaneID()
+			for _, pid := range ws.LeafPanes() {
+				rect, _, _, ok := ws.PaneGeometry(pid)
 				pane := sess.Panes[pid]
-				if node != nil && pane != nil {
+				if ok && pane != nil {
 					pane.mu.RLock()
 					panes = append(panes, protocol.DetailedPaneInfo{
 						SessionName: name,
@@ -217,13 +216,12 @@ func (d *Daemon) handleListPanesMsg(writer *protocol.EnvelopeWriter, env *protoc
 						IsActive:    pid == activePaneID && sess.ActiveWS == wsID,
 						AgentState:  pane.AgentState,
 						AgentBadge:  pane.AgentBadge,
-						Width:       node.Rect.W,
-						Height:      node.Rect.H,
+						Width:       rect.W,
+						Height:      rect.H,
 					})
 					pane.mu.RUnlock()
 				}
 			}
-			ws.mu.RUnlock()
 		}
 		sess.mu.RUnlock()
 	}
