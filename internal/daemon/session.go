@@ -150,17 +150,13 @@ func (s *Session) VisiblePanes() []*Pane {
 		return nil
 	}
 
-	if ws.Tree != nil && ws.Tree.MonoclePaneID != "" {
-		if p, ok := s.Panes[ws.Tree.MonoclePaneID]; ok && p != nil {
+	if ws.IsMonocle() {
+		if p, ok := s.Panes[ws.MonoclePaneID()]; ok && p != nil {
 			return []*Pane{p}
 		}
 	}
 
-	if ws.Tree == nil {
-		return nil
-	}
-
-	leafIDs := ws.Tree.ListLeafPanes()
+	leafIDs := ws.LeafPanes()
 	panes := make([]*Pane, 0, len(leafIDs))
 	for _, pid := range leafIDs {
 		if p, ok := s.Panes[pid]; ok && p != nil {
@@ -185,28 +181,21 @@ func (s *Session) SplitActive(dir bsp.SplitDirection) (*Pane, error) {
 	newPane := s.createPane(newID, "shell")
 	s.Panes[newID] = newPane
 
-	_, err := ws.Tree.Split(targetPaneID, newID, dir, 0.5)
-	if err != nil {
+	if err := ws.Split(targetPaneID, newID, dir); err != nil {
 		delete(s.Panes, newID)
 		return nil, err
 	}
 
 	ws.Layout(s.Cols, s.Rows)
 
-	node := ws.Tree.FindNode(newID)
 	env := []string{
 		fmt.Sprintf("DAJIMUX_SESSION=%s", s.Name),
 		fmt.Sprintf("DAJIMUX_WORKSPACE=%d", s.ActiveWS),
 	}
 
-	hasBorders := len(ws.Tree.ListLeafPanes()) > 1 && ws.Tree.MonoclePaneID == ""
 	w, h := 40, 12
-	if node != nil {
-		w, h = node.Rect.W, node.Rect.H
-		if hasBorders {
-			w -= 2
-			h -= 2
-		}
+	if _, vw, vh, ok := ws.PaneGeometry(newID); ok {
+		w, h = vw, vh
 	}
 	if w < 2 {
 		w = 2
@@ -216,7 +205,7 @@ func (s *Session) SplitActive(dir bsp.SplitDirection) (*Pane, error) {
 	}
 
 	if err := newPane.Start(s.defaultShell(), w, h, env); err != nil {
-		_ = ws.Tree.Close(newID)
+		_ = ws.ClosePane(newID)
 		delete(s.Panes, newID)
 		return nil, fmt.Errorf("failed to spawn pane process: %w", err)
 	}
@@ -238,11 +227,9 @@ func (s *Session) SplitActiveAuto() (*Pane, error) {
 	}
 	targetID := ws.ActivePaneID()
 	dir := bsp.SplitHorizontal
-	if ws.Tree != nil {
-		if node := ws.Tree.FindNode(targetID); node != nil {
-			if node.Rect.W > (node.Rect.H * 2) {
-				dir = bsp.SplitVertical
-			}
+	if rect, _, _, ok := ws.PaneGeometry(targetID); ok {
+		if rect.W > (rect.H * 2) {
+			dir = bsp.SplitVertical
 		}
 	}
 	s.mu.RUnlock()
@@ -265,28 +252,21 @@ func (s *Session) SpawnPane(dir bsp.SplitDirection, cwd string, initialCmd strin
 	newPane := s.createPane(newID, "shell")
 	s.Panes[newID] = newPane
 
-	_, err := ws.Tree.Split(targetPaneID, newID, dir, 0.5)
-	if err != nil {
+	if err := ws.Split(targetPaneID, newID, dir); err != nil {
 		delete(s.Panes, newID)
 		return nil, err
 	}
 
 	ws.Layout(s.Cols, s.Rows)
 
-	node := ws.Tree.FindNode(newID)
 	env := []string{
 		fmt.Sprintf("DAJIMUX_SESSION=%s", s.Name),
 		fmt.Sprintf("DAJIMUX_WORKSPACE=%d", s.ActiveWS),
 	}
 
-	hasBorders := len(ws.Tree.ListLeafPanes()) > 1 && ws.Tree.MonoclePaneID == ""
 	w, h := 40, 12
-	if node != nil {
-		w, h = node.Rect.W, node.Rect.H
-		if hasBorders {
-			w -= 2
-			h -= 2
-		}
+	if _, vw, vh, ok := ws.PaneGeometry(newID); ok {
+		w, h = vw, vh
 	}
 	if w < 2 {
 		w = 2
@@ -296,7 +276,7 @@ func (s *Session) SpawnPane(dir bsp.SplitDirection, cwd string, initialCmd strin
 	}
 
 	if err := newPane.StartWithCwd(s.defaultShell(), w, h, env, cwd); err != nil {
-		_ = ws.Tree.Close(newID)
+		_ = ws.ClosePane(newID)
 		delete(s.Panes, newID)
 		return nil, fmt.Errorf("failed to spawn pane process: %w", err)
 	}
@@ -381,7 +361,7 @@ func (s *Session) ClosePaneByID(paneID string) error {
 	var targetWS *Workspace
 	var targetWSID int
 	for wsID, ws := range s.Workspaces {
-		if ws.Tree != nil && ws.Tree.FindNode(paneID) != nil {
+		if ws.ContainsPane(paneID) {
 			targetWS = ws
 			targetWSID = wsID
 			break
@@ -392,11 +372,11 @@ func (s *Session) ClosePaneByID(paneID string) error {
 		return nil
 	}
 
-	if err := targetWS.Tree.Close(paneID); err != nil {
+	if err := targetWS.ClosePane(paneID); err != nil {
 		return err
 	}
 
-	if targetWS.Tree.Root == nil {
+	if targetWS.IsEmpty() {
 		// Workspace empty; delete workspace unless it's ws 1
 		if targetWSID != 1 {
 			delete(s.Workspaces, targetWSID)
@@ -408,7 +388,7 @@ func (s *Session) ClosePaneByID(paneID string) error {
 			newID := s.nextPaneID()
 			newPane := s.createPane(newID, "shell")
 			s.Panes[newID] = newPane
-			targetWS.Tree = bsp.NewTree(newID)
+			targetWS.SetRootPane(newID)
 			env := []string{
 				fmt.Sprintf("DAJIMUX_SESSION=%s", s.Name),
 				fmt.Sprintf("DAJIMUX_WORKSPACE=%d", 1),
@@ -437,7 +417,7 @@ func (s *Session) Navigate(dir bsp.NavDirection) {
 	}
 
 	curr := ws.ActivePaneID()
-	target := ws.Tree.FindNeighbor(curr, dir)
+	target := ws.FindNeighbor(curr, dir)
 	if target != "" && target != curr {
 		ws.SetActivePane(target)
 		go s.NotifyState()
@@ -454,8 +434,7 @@ func (s *Session) FocusPane(paneID string) {
 		return
 	}
 
-	node := ws.Tree.FindNode(paneID)
-	if node != nil && ws.ActivePaneID() != paneID {
+	if ws.ContainsPane(paneID) && ws.ActivePaneID() != paneID {
 		ws.SetActivePane(paneID)
 		go s.NotifyState()
 	}
@@ -471,7 +450,7 @@ func (s *Session) SwapActiveWithNext() error {
 		return fmt.Errorf("no active workspace")
 	}
 
-	if err := ws.Tree.SwapNext(); err != nil {
+	if err := ws.SwapNext(); err != nil {
 		return err
 	}
 
@@ -491,7 +470,7 @@ func (s *Session) SwapActive(dir bsp.NavDirection) error {
 		return fmt.Errorf("no active workspace")
 	}
 
-	if err := ws.Tree.SwapDirection(dir); err != nil {
+	if err := ws.SwapDirection(dir); err != nil {
 		return err
 	}
 
@@ -530,7 +509,7 @@ func (s *Session) MoveActiveToWorkspace(targetWS int) error {
 	}
 
 	// Detach from current workspace
-	srcLeaves := srcWS.Tree.ListLeafPanes()
+	srcLeaves := srcWS.LeafPanes()
 	if len(srcLeaves) <= 1 {
 		// Spawn replacement shell in source workspace so it is not left empty
 		newID := s.nextPaneID()
@@ -541,9 +520,9 @@ func (s *Session) MoveActiveToWorkspace(targetWS int) error {
 			fmt.Sprintf("DAJIMUX_WORKSPACE=%d", s.ActiveWS),
 		}
 		_ = replacementPane.Start(s.defaultShell(), srcWS.Bounds.W, srcWS.Bounds.H, env)
-		srcWS.Tree = bsp.NewTree(newID)
+		srcWS.SetRootPane(newID)
 	} else {
-		_ = srcWS.Tree.Close(activePaneID)
+		_ = srcWS.ClosePane(activePaneID)
 	}
 
 	srcWS.Layout(s.Cols, s.Rows)
@@ -556,7 +535,7 @@ func (s *Session) MoveActiveToWorkspace(targetWS int) error {
 		tgtWS.Layout(s.Cols, s.Rows)
 		s.Workspaces[targetWS] = tgtWS
 	} else {
-		_, _ = tgtWS.Tree.InsertPane(activePaneID)
+		_ = tgtWS.InsertPane(activePaneID)
 		tgtWS.SetActivePane(activePaneID)
 		tgtWS.Layout(s.Cols, s.Rows)
 	}
@@ -626,7 +605,7 @@ func (s *Session) AdjustSplit(delta float64) {
 		return
 	}
 
-	ws.Tree.AdjustRatio(ws.ActivePaneID(), delta)
+	ws.AdjustRatio(ws.ActivePaneID(), delta)
 	ws.Layout(s.Cols, s.Rows)
 	s.syncPaneSizes(ws)
 
@@ -643,7 +622,7 @@ func (s *Session) ToggleMonocle() {
 		return
 	}
 
-	ws.Tree.ToggleMonocle(ws.ActivePaneID())
+	ws.ToggleMonocle(ws.ActivePaneID())
 	ws.Layout(s.Cols, s.Rows)
 	s.syncPaneSizes(ws)
 
@@ -651,17 +630,12 @@ func (s *Session) ToggleMonocle() {
 }
 
 func (s *Session) syncPaneSizes(ws *Workspace) {
-	hasBorders := len(ws.Tree.ListLeafPanes()) > 1 && ws.Tree.MonoclePaneID == ""
-	for _, paneID := range ws.Tree.ListLeafPanes() {
-		node := ws.Tree.FindNode(paneID)
+	for _, paneID := range ws.LeafPanes() {
 		pane := s.Panes[paneID]
-		if node != nil && pane != nil {
-			cols := node.Rect.W
-			rows := node.Rect.H
-			if hasBorders {
-				cols -= 2
-				rows -= 2
-			}
+		if pane == nil {
+			continue
+		}
+		if _, cols, rows, ok := ws.PaneGeometry(paneID); ok {
 			if cols < 2 {
 				cols = 2
 			}
@@ -696,8 +670,8 @@ func (s *Session) CycleLayout() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ws := s.Workspaces[s.ActiveWS]
-	if ws != nil && ws.Tree != nil {
-		ws.Tree.CycleLayout()
+	if ws != nil {
+		ws.CycleLayout()
 		ws.Layout(s.Cols, s.Rows)
 		s.syncPaneSizes(ws)
 	}
@@ -709,8 +683,8 @@ func (s *Session) SetLayout(lt bsp.LayoutType) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ws := s.Workspaces[s.ActiveWS]
-	if ws != nil && ws.Tree != nil {
-		ws.Tree.SetLayoutType(lt)
+	if ws != nil {
+		ws.SetLayoutType(lt)
 		ws.Layout(s.Cols, s.Rows)
 		s.syncPaneSizes(ws)
 	}
@@ -731,10 +705,10 @@ func (s *Session) GetLayoutState() protocol.LayoutStatePayload {
 	}
 
 	panes := make([]protocol.PaneInfo, 0, len(s.Panes))
-	for _, pid := range ws.Tree.ListLeafPanes() {
-		node := ws.Tree.FindNode(pid)
+	for _, pid := range ws.LeafPanes() {
+		rect, _, _, ok := ws.PaneGeometry(pid)
 		pane := s.Panes[pid]
-		if node != nil && pane != nil {
+		if ok && pane != nil {
 			pane.mu.RLock()
 			pTitle := pane.Title
 			pState := pane.AgentState
@@ -743,10 +717,10 @@ func (s *Session) GetLayoutState() protocol.LayoutStatePayload {
 			info := protocol.PaneInfo{
 				ID:         pid,
 				Title:      pTitle,
-				X:          node.Rect.X,
-				Y:          node.Rect.Y,
-				W:          node.Rect.W,
-				H:          node.Rect.H,
+				X:          rect.X,
+				Y:          rect.Y,
+				W:          rect.W,
+				H:          rect.H,
 				IsActive:   pid == ws.ActivePaneID(),
 				AgentState: pState,
 				AgentBadge: pBadge,
@@ -765,9 +739,9 @@ func (s *Session) GetLayoutState() protocol.LayoutStatePayload {
 		}
 	}
 
-	layoutTypeStr := "bsp"
-	if ws != nil && ws.Tree != nil && ws.Tree.LayoutType != "" {
-		layoutTypeStr = string(ws.Tree.LayoutType)
+	layoutTypeStr := string(ws.LayoutType())
+	if layoutTypeStr == "" {
+		layoutTypeStr = "bsp"
 	}
 
 	return protocol.LayoutStatePayload{
@@ -779,7 +753,7 @@ func (s *Session) GetLayoutState() protocol.LayoutStatePayload {
 		ActivePaneID:    ws.ActivePaneID(),
 		Mode:            s.Mode,
 		Panes:           panes,
-		IsMonocle:       ws.Tree.MonoclePaneID != "",
+		IsMonocle:       ws.IsMonocle(),
 	}
 }
 
@@ -816,12 +790,20 @@ func (s *Session) ToSerialized() *state.SerializedSession {
 
 	for id, ws := range s.Workspaces {
 		ws.mu.RLock()
+		var rootNode *bsp.Node
+		layoutType := "bsp"
+		activePaneID := ""
+		if ws.Tree != nil {
+			rootNode = ws.Tree.Root
+			layoutType = string(ws.Tree.LayoutType)
+			activePaneID = ws.Tree.ActivePaneID
+		}
 		sws := &state.SerializedWorkspace{
 			ID:           ws.ID,
 			Name:         ws.Name,
-			LayoutType:   string(ws.Tree.LayoutType),
-			ActivePaneID: ws.Tree.ActivePaneID,
-			Tree:         state.SerializeBSPNode(ws.Tree.Root),
+			LayoutType:   layoutType,
+			ActivePaneID: activePaneID,
+			Tree:         state.SerializeBSPNode(rootNode),
 		}
 		ws.mu.RUnlock()
 		ss.Workspaces[id] = sws

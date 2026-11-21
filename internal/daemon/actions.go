@@ -42,76 +42,76 @@ func (ad *ActionDispatcher) Dispatch(s *Session, action protocol.ActionPayload) 
 }
 
 func (ad *ActionDispatcher) registerDefaults() {
-	ad.handlers["split_h"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionSplitH] = func(s *Session, params map[string]string) error {
 		_, err := s.SplitActive(bsp.SplitHorizontal)
 		return err
 	}
 
-	ad.handlers["split_v"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionSplitV] = func(s *Session, params map[string]string) error {
 		_, err := s.SplitActive(bsp.SplitVertical)
 		return err
 	}
 
-	ad.handlers["split_auto"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionSplitAuto] = func(s *Session, params map[string]string) error {
 		_, err := s.SplitActiveAuto()
 		return err
 	}
 
-	ad.handlers["close_pane"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionClosePane] = func(s *Session, params map[string]string) error {
 		if paneID := params["pane_id"]; paneID != "" {
 			return s.ClosePaneByID(paneID)
 		}
 		return s.CloseActive()
 	}
 
-	ad.handlers["nav_left"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionNavLeft] = func(s *Session, params map[string]string) error {
 		s.Navigate(bsp.NavLeft)
 		return nil
 	}
 
-	ad.handlers["nav_down"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionNavDown] = func(s *Session, params map[string]string) error {
 		s.Navigate(bsp.NavDown)
 		return nil
 	}
 
-	ad.handlers["nav_up"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionNavUp] = func(s *Session, params map[string]string) error {
 		s.Navigate(bsp.NavUp)
 		return nil
 	}
 
-	ad.handlers["nav_right"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionNavRight] = func(s *Session, params map[string]string) error {
 		s.Navigate(bsp.NavRight)
 		return nil
 	}
 
-	ad.handlers["focus_pane"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionFocusPane] = func(s *Session, params map[string]string) error {
 		if paneID := params["pane_id"]; paneID != "" {
 			s.FocusPane(paneID)
 		}
 		return nil
 	}
 
-	ad.handlers["swap_next"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionSwapNext] = func(s *Session, params map[string]string) error {
 		return s.SwapActiveWithNext()
 	}
 
-	ad.handlers["swap_left"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionSwapLeft] = func(s *Session, params map[string]string) error {
 		return s.SwapActive(bsp.NavLeft)
 	}
 
-	ad.handlers["swap_down"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionSwapDown] = func(s *Session, params map[string]string) error {
 		return s.SwapActive(bsp.NavDown)
 	}
 
-	ad.handlers["swap_up"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionSwapUp] = func(s *Session, params map[string]string) error {
 		return s.SwapActive(bsp.NavUp)
 	}
 
-	ad.handlers["swap_right"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionSwapRight] = func(s *Session, params map[string]string) error {
 		return s.SwapActive(bsp.NavRight)
 	}
 
-	ad.handlers["move_pane_ws"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionMovePaneWS] = func(s *Session, params map[string]string) error {
 		var wsNum int
 		if fmt.Sscanf(params["workspace"], "%d", &wsNum); wsNum > 0 {
 			return s.MoveActiveToWorkspace(wsNum)
@@ -119,12 +119,12 @@ func (ad *ActionDispatcher) registerDefaults() {
 		return nil
 	}
 
-	ad.handlers["toggle_monocle"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionToggleMonocle] = func(s *Session, params map[string]string) error {
 		s.ToggleMonocle()
 		return nil
 	}
 
-	ad.handlers["switch_workspace"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionSwitchWorkspace] = func(s *Session, params map[string]string) error {
 		var wsNum int
 		if fmt.Sscanf(params["workspace"], "%d", &wsNum); wsNum > 0 {
 			s.SwitchWorkspace(wsNum)
@@ -132,7 +132,7 @@ func (ad *ActionDispatcher) registerDefaults() {
 		return nil
 	}
 
-	ad.handlers["resize_delta"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionResizeDelta] = func(s *Session, params map[string]string) error {
 		var delta float64
 		if fmt.Sscanf(params["delta"], "%f", &delta); delta != 0 {
 			s.AdjustSplit(delta)
@@ -140,7 +140,7 @@ func (ad *ActionDispatcher) registerDefaults() {
 		return nil
 	}
 
-	ad.handlers["mode_change"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionModeChange] = func(s *Session, params map[string]string) error {
 		target := protocol.Mode(params["target"])
 		if target != "" {
 			s.SetMode(target)
@@ -148,12 +148,12 @@ func (ad *ActionDispatcher) registerDefaults() {
 		return nil
 	}
 
-	ad.handlers["cycle_layout"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionCycleLayout] = func(s *Session, params map[string]string) error {
 		s.CycleLayout()
 		return nil
 	}
 
-	ad.handlers["set_layout"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionSetLayout] = func(s *Session, params map[string]string) error {
 		lt := bsp.LayoutType(params["type"])
 		if lt != "" {
 			s.SetLayout(lt)
@@ -161,7 +161,7 @@ func (ad *ActionDispatcher) registerDefaults() {
 		return nil
 	}
 
-	ad.handlers["rename_workspace"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionRenameWorkspace] = func(s *Session, params map[string]string) error {
 		name := params["name"]
 		if name != "" {
 			wsNum := s.ActiveWS
@@ -173,7 +173,7 @@ func (ad *ActionDispatcher) registerDefaults() {
 		return nil
 	}
 
-	ad.handlers["redraw"] = func(s *Session, params map[string]string) error {
+	ad.handlers[protocol.ActionRedraw] = func(s *Session, params map[string]string) error {
 		s.NotifyState()
 		return nil
 	}
