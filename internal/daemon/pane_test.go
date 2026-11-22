@@ -69,3 +69,15 @@ func TestPaneTitleChangeCallback(t *testing.T) {
 		t.Errorf("unexpected callback result: id=%q title=%q", capturedID, capturedTitle)
 	}
 }
+
+func TestPaneThreadSafeAccessors(t *testing.T) {
+	pane := NewPane("p1", "shell")
+	pane.SetTitle("editor")
+	pane.SetCwd("/tmp")
+	pane.SetAgentStatus("running", "agent-1")
+
+	title, state, badge, cwd := pane.Snapshot()
+	if title != "editor" || state != "running" || badge != "agent-1" || cwd != "/tmp" {
+		t.Fatalf("unexpected snapshot: title=%s, state=%s, badge=%s, cwd=%s", title, state, badge, cwd)
+	}
+}
