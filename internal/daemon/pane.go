@@ -333,6 +333,35 @@ func (p *Pane) Close() error {
 	return nil
 }
 
+// SetAgentStatus updates the agent telemetry state and badge thread-safely.
+func (p *Pane) SetAgentStatus(state, badge string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.AgentState = state
+	p.AgentBadge = badge
+}
+
+// Snapshot returns the current display metadata for the pane thread-safely.
+func (p *Pane) Snapshot() (title, agentState, agentBadge, cwd string) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.Title, p.AgentState, p.AgentBadge, p.Cwd
+}
+
+// SetTitle updates the pane title thread-safely.
+func (p *Pane) SetTitle(title string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Title = title
+}
+
+// SetCwd updates the pane current working directory thread-safely.
+func (p *Pane) SetCwd(cwd string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Cwd = cwd
+}
+
 // resolveDefaultShell determines the best available shell across Linux, macOS, and BSD systems.
 func resolveDefaultShell(requested string) string {
 	if requested != "" {
