@@ -48,8 +48,6 @@ func NewBroker(onStatusChange func(status *PaneStatus)) *Broker {
 // UpdateStatus sets or updates an agent's status.
 func (b *Broker) UpdateStatus(paneID string, payload protocol.AgentStatusPayload) *PaneStatus {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	status, exists := b.statuses[paneID]
 	if !exists {
 		status = &PaneStatus{
@@ -67,8 +65,11 @@ func (b *Broker) UpdateStatus(paneID string, payload protocol.AgentStatusPayload
 		status.Metadata[k] = v
 	}
 
-	if b.onStatusChange != nil {
-		b.onStatusChange(status)
+	cb := b.onStatusChange
+	b.mu.Unlock()
+
+	if cb != nil {
+		cb(status)
 	}
 
 	return status
