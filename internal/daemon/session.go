@@ -59,17 +59,7 @@ func NewSessionWithConfig(name string, cols, rows int, cfg *config.Config, onSta
 		OnStateChange: onStateChange,
 	}
 
-	s.Broker = agent.NewBroker(func(status *agent.PaneStatus) {
-		s.mu.Lock()
-		if pane, ok := s.Panes[status.PaneID]; ok {
-			pane.mu.Lock()
-			pane.AgentState = status.State
-			pane.AgentBadge = status.Badge
-			pane.mu.Unlock()
-		}
-		s.mu.Unlock()
-		s.NotifyState()
-	})
+	s.initBroker()
 
 	// Create initial pane
 	initialPaneID := s.nextPaneID()
@@ -90,6 +80,21 @@ func NewSessionWithConfig(name string, cols, rows int, cfg *config.Config, onSta
 	}
 
 	return s, nil
+}
+
+func (s *Session) initBroker() {
+	s.Broker = agent.NewBroker(func(status *agent.PaneStatus) {
+		s.UpdatePaneAgentStatus(status.PaneID, status.State, status.Badge)
+	})
+}
+
+// UpdatePaneAgentStatus updates agent telemetry for a pane without nested locking.
+func (s *Session) UpdatePaneAgentStatus(paneID, state, badge string) {
+	pane := s.GetPane(paneID)
+	if pane != nil {
+		pane.SetAgentStatus(state, badge)
+		s.NotifyState()
+	}
 }
 
 func (s *Session) createPane(id, title string) *Pane {
@@ -342,19 +347,19 @@ func (s *Session) Close() {
 // ClosePaneByID terminates and removes a specific pane by its ID across any workspace.
 func (s *Session) ClosePaneByID(paneID string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if s.isClosed {
+		s.mu.Unlock()
 		return nil
 	}
 
 	pane, ok := s.Panes[paneID]
 	if !ok {
+		s.mu.Unlock()
 		return nil
 	}
 
 	delete(s.Panes, paneID)
-	_ = pane.Close()
 	s.Broker.RemovePane(paneID)
 
 	// Locate workspace holding this pane
@@ -369,10 +374,14 @@ func (s *Session) ClosePaneByID(paneID string) error {
 	}
 
 	if targetWS == nil {
+		s.mu.Unlock()
+		_ = pane.Close()
 		return nil
 	}
 
 	if err := targetWS.ClosePane(paneID); err != nil {
+		s.mu.Unlock()
+		_ = pane.Close()
 		return err
 	}
 
@@ -400,7 +409,12 @@ func (s *Session) ClosePaneByID(paneID string) error {
 	targetWS.Layout(s.Cols, s.Rows)
 	s.syncPaneSizes(targetWS)
 
-	if !s.isClosed {
+	shouldNotify := !s.isClosed
+	s.mu.Unlock()
+
+	_ = pane.Close()
+
+	if shouldNotify {
 		go s.NotifyState()
 	}
 	return nil
@@ -709,11 +723,7 @@ func (s *Session) GetLayoutState() protocol.LayoutStatePayload {
 		rect, _, _, ok := ws.PaneGeometry(pid)
 		pane := s.Panes[pid]
 		if ok && pane != nil {
-			pane.mu.RLock()
-			pTitle := pane.Title
-			pState := pane.AgentState
-			pBadge := pane.AgentBadge
-			pane.mu.RUnlock()
+			pTitle, pState, pBadge, _ := pane.Snapshot()
 			info := protocol.PaneInfo{
 				ID:         pid,
 				Title:      pTitle,
@@ -777,15 +787,14 @@ func (s *Session) ToSerialized() *state.SerializedSession {
 	}
 
 	for id, p := range s.Panes {
-		p.mu.RLock()
+		pTitle, pState, pBadge, pCwd := p.Snapshot()
 		ss.Panes[id] = &state.SerializedPane{
 			ID:         p.ID,
-			Title:      p.Title,
-			Cwd:        p.Cwd,
-			AgentState: p.AgentState,
-			AgentBadge: p.AgentBadge,
+			Title:      pTitle,
+			Cwd:        pCwd,
+			AgentState: pState,
+			AgentBadge: pBadge,
 		}
-		p.mu.RUnlock()
 	}
 
 	for id, ws := range s.Workspaces {
@@ -810,6 +819,51 @@ func (s *Session) ToSerialized() *state.SerializedSession {
 	}
 
 	return ss
+}
+
+// Rename updates the session name thread-safely.
+func (s *Session) Rename(newName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Name = newName
+}
+
+// Summary returns a quick snapshot of workspace count, pane count, and active workspace.
+func (s *Session) Summary() (wsCount, panesCount, activeWS int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.Workspaces), len(s.Panes), s.ActiveWS
+}
+
+// DetailedPanes returns metadata for all leaf panes across workspaces in this session.
+func (s *Session) DetailedPanes() []protocol.DetailedPaneInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var res []protocol.DetailedPaneInfo
+	for wsID, ws := range s.Workspaces {
+		activePaneID := ws.ActivePaneID()
+		for _, pid := range ws.LeafPanes() {
+			rect, _, _, ok := ws.PaneGeometry(pid)
+			pane := s.Panes[pid]
+			if ok && pane != nil {
+				title, agentState, agentBadge, cwd := pane.Snapshot()
+				res = append(res, protocol.DetailedPaneInfo{
+					SessionName: s.Name,
+					WorkspaceID: wsID,
+					PaneID:      pid,
+					Title:       title,
+					Cwd:         cwd,
+					IsActive:    pid == activePaneID && s.ActiveWS == wsID,
+					AgentState:  agentState,
+					AgentBadge:  agentBadge,
+					Width:       rect.W,
+					Height:      rect.H,
+				})
+			}
+		}
+	}
+	return res
 }
 
 // RestoreSessionFromSerialized reconstructs a live Session from saved state.
@@ -843,17 +897,7 @@ func RestoreSessionFromSerializedWithConfig(ss *state.SerializedSession, cols, r
 		OnStateChange: onStateChange,
 	}
 
-	s.Broker = agent.NewBroker(func(status *agent.PaneStatus) {
-		s.mu.Lock()
-		if pane, ok := s.Panes[status.PaneID]; ok {
-			pane.mu.Lock()
-			pane.AgentState = status.State
-			pane.AgentBadge = status.Badge
-			pane.mu.Unlock()
-		}
-		s.mu.Unlock()
-		s.NotifyState()
-	})
+	s.initBroker()
 
 	// Recreate panes and launch processes in their respective CWDs
 	for id, sp := range ss.Panes {
