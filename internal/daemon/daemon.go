@@ -401,9 +401,6 @@ func (d *Daemon) updateSessionDimensions(s *Session) {
 }
 
 func (d *Daemon) broadcastLayoutState(sessionName string, state protocol.LayoutStatePayload) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
 	data, err := json.Marshal(state)
 	if err != nil {
 		return
@@ -414,27 +411,33 @@ func (d *Daemon) broadcastLayoutState(sessionName string, state protocol.LayoutS
 		Payload: data,
 	}
 
+	d.mu.RLock()
+	var targets []*protocol.EnvelopeWriter
 	for _, entry := range d.clients {
-		if entry.session.Name == sessionName {
-			_ = entry.writer.Write(env)
+		if entry.session != nil && entry.session.Name == sessionName {
+			targets = append(targets, entry.writer)
 		}
+	}
+	d.mu.RUnlock()
+
+	for _, w := range targets {
+		_ = w.Write(env)
 	}
 }
 
 // SaveState serializes all active sessions to disk.
 func (d *Daemon) SaveState(path string) error {
 	d.mu.RLock()
-	defer d.mu.RUnlock()
-
 	st := &state.SerializedState{
 		Version:  1,
 		SavedAt:  time.Now(),
-		Sessions: make(map[string]*state.SerializedSession),
+		Sessions: make(map[string]*state.SerializedSession, len(d.Sessions)),
 	}
 
 	for name, sess := range d.Sessions {
 		st.Sessions[name] = sess.ToSerialized()
 	}
+	d.mu.RUnlock()
 
 	return state.SaveStateToFile(path, st)
 }
@@ -444,10 +447,7 @@ func (d *Daemon) ClosePaneByID(paneID string) error {
 	d.mu.RLock()
 	var targetSession *Session
 	for _, sess := range d.Sessions {
-		sess.mu.RLock()
-		_, exists := sess.Panes[paneID]
-		sess.mu.RUnlock()
-		if exists {
+		if sess.GetPane(paneID) != nil {
 			targetSession = sess
 			break
 		}
@@ -520,10 +520,6 @@ func (d *Daemon) RenameSession(oldName, newName string) error {
 		return fmt.Errorf("session %q already exists", newName)
 	}
 
-	sess.mu.Lock()
-	sess.Name = newName
-	sess.mu.Unlock()
-
 	delete(d.Sessions, oldName)
 	d.Sessions[newName] = sess
 
@@ -532,6 +528,8 @@ func (d *Daemon) RenameSession(oldName, newName string) error {
 	}
 
 	d.mu.Unlock()
+
+	sess.Rename(newName)
 
 	// Notify attached clients of updated session name
 	go sess.NotifyState()

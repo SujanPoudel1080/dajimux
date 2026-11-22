@@ -135,9 +135,7 @@ func (d *Daemon) handlePaneCaptureMsg(attachedSession *Session, writer *protocol
 	}
 	var p protocol.PaneCaptureRequest
 	if err := json.Unmarshal(env.Payload, &p); err == nil {
-		sess.mu.RLock()
-		targetPane := sess.Panes[p.TargetPaneID]
-		sess.mu.RUnlock()
+		targetPane := sess.GetPane(p.TargetPaneID)
 
 		var lines []string
 		if targetPane != nil {
@@ -157,30 +155,34 @@ func (d *Daemon) handlePaneCaptureMsg(attachedSession *Session, writer *protocol
 
 func (d *Daemon) handleListSessionsMsg(writer *protocol.EnvelopeWriter) {
 	d.mu.RLock()
-	var summaries []protocol.SessionSummary
+	type sessionEntry struct {
+		name string
+		sess *Session
+	}
+	sessions := make([]sessionEntry, 0, len(d.Sessions))
 	for name, sess := range d.Sessions {
-		sess.mu.RLock()
-		wsCount := len(sess.Workspaces)
-		panesCount := len(sess.Panes)
-		activeWS := sess.ActiveWS
-		sess.mu.RUnlock()
+		sessions = append(sessions, sessionEntry{name: name, sess: sess})
+	}
 
-		clientCount := 0
-		for _, entry := range d.clients {
-			if entry.session != nil && entry.session.Name == name {
-				clientCount++
-			}
+	clientCounts := make(map[string]int)
+	for _, entry := range d.clients {
+		if entry.session != nil {
+			clientCounts[entry.session.Name]++
 		}
+	}
+	d.mu.RUnlock()
 
+	var summaries []protocol.SessionSummary
+	for _, se := range sessions {
+		wsCount, panesCount, activeWS := se.sess.Summary()
 		summaries = append(summaries, protocol.SessionSummary{
-			Name:            name,
+			Name:            se.name,
 			WorkspacesCount: wsCount,
 			PanesCount:      panesCount,
 			ActiveWorkspace: activeWS,
-			AttachedClients: clientCount,
+			AttachedClients: clientCounts[se.name],
 		})
 	}
-	d.mu.RUnlock()
 
 	resData, _ := json.Marshal(protocol.ListSessionsResponse{Sessions: summaries})
 	_ = writer.Write(protocol.Envelope{
@@ -194,38 +196,18 @@ func (d *Daemon) handleListPanesMsg(writer *protocol.EnvelopeWriter, env *protoc
 	_ = json.Unmarshal(env.Payload, &req)
 
 	d.mu.RLock()
-	var panes []protocol.DetailedPaneInfo
+	var sessions []*Session
 	for name, sess := range d.Sessions {
-		if req.SessionName != "" && req.SessionName != name {
-			continue
+		if req.SessionName == "" || req.SessionName == name {
+			sessions = append(sessions, sess)
 		}
-		sess.mu.RLock()
-		for wsID, ws := range sess.Workspaces {
-			activePaneID := ws.ActivePaneID()
-			for _, pid := range ws.LeafPanes() {
-				rect, _, _, ok := ws.PaneGeometry(pid)
-				pane := sess.Panes[pid]
-				if ok && pane != nil {
-					pane.mu.RLock()
-					panes = append(panes, protocol.DetailedPaneInfo{
-						SessionName: name,
-						WorkspaceID: wsID,
-						PaneID:      pid,
-						Title:       pane.Title,
-						Cwd:         pane.Cwd,
-						IsActive:    pid == activePaneID && sess.ActiveWS == wsID,
-						AgentState:  pane.AgentState,
-						AgentBadge:  pane.AgentBadge,
-						Width:       rect.W,
-						Height:      rect.H,
-					})
-					pane.mu.RUnlock()
-				}
-			}
-		}
-		sess.mu.RUnlock()
 	}
 	d.mu.RUnlock()
+
+	var panes []protocol.DetailedPaneInfo
+	for _, sess := range sessions {
+		panes = append(panes, sess.DetailedPanes()...)
+	}
 
 	resData, _ := json.Marshal(protocol.ListPanesResponse{Panes: panes})
 	_ = writer.Write(protocol.Envelope{
