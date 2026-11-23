@@ -44,7 +44,9 @@ func PaletteItemsForWorkspaces(totalWS int) []PaletteItem {
 		{ID: "resize", Title: "Resize Mode", Description: "Fine-tune pane split ratios", Action: ActionModeChange},
 		{ID: "scrollback", Title: "Scrollback Mode", Description: "Browse scrollback history and copy text", Action: ActionEnterScrollback},
 		{ID: "help", Title: "Help / Quick Reference", Description: "Show interactive keybinding cheat sheet (?)", Action: ActionToggleHelp},
-		{ID: "detach", Title: "Detach Session", Description: "Disconnect client and keep session running in daemon", Action: ActionDetach},
+		{ID: "detach", Title: "Detach Session", Description: "Disconnect client and keep session running in daemon (d)", Action: ActionDetach},
+		{ID: "kill_session", Title: "Kill Current Session", Description: "Terminate all panes in current session and exit (q)", Action: ActionKillSession},
+		{ID: "kill_server", Title: "Quit dajimux (Stop Daemon)", Description: "Stop background daemon and terminate all sessions (Q)", Action: ActionKillServer},
 	}
 
 	maxWS := totalWS

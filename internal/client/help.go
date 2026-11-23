@@ -25,6 +25,8 @@ var defaultHelpLines = []string{
 	"  1 .. 9          Switch to workspace 1..9",
 	"  m <1-9>         Move active pane to workspace 1..9",
 	"  d               Detach session (leaves background daemon running)",
+	"  q               Quit session (terminates current session)",
+	"  Q               Quit dajimux completely (stops daemon)",
 	"",
 	"MOUSE & UTILITIES",
 	"  Click Pane      Focus pane | Drag border to resize split ratio",

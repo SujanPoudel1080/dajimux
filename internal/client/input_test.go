@@ -216,3 +216,26 @@ func TestInputHandlerPrefixMode(t *testing.T) {
 		t.Fatalf("expected escape to cancel prefix, got %+v", res)
 	}
 }
+
+func TestInputHandlerQuitAndKillKeys(t *testing.T) {
+	handler := NewInputHandler()
+	handler.CurrentMode = protocol.ModeNormal
+
+	// 'd' detaches
+	res := handler.HandleKey([]byte{'d'})
+	if res.Action != ActionDetach {
+		t.Errorf("expected ActionDetach on 'd', got %s", res.Action)
+	}
+
+	// 'q' quits current session
+	res = handler.HandleKey([]byte{'q'})
+	if res.Action != ActionKillSession {
+		t.Errorf("expected ActionKillSession on 'q', got %s", res.Action)
+	}
+
+	// 'Q' stops daemon server
+	res = handler.HandleKey([]byte{'Q'})
+	if res.Action != ActionKillServer {
+		t.Errorf("expected ActionKillServer on 'Q', got %s", res.Action)
+	}
+}
