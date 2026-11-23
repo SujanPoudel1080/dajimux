@@ -142,3 +142,32 @@ func TestPaletteScrollingAndWrapAround(t *testing.T) {
 		t.Errorf("selected index %d must be inside visible window [%d, %d)", p.SelectedIndex, p.ScrollOffset, p.ScrollOffset+maxVisible)
 	}
 }
+
+func TestPaletteQuitAndKillItems(t *testing.T) {
+	p := NewPalette()
+
+	hasKillSession := false
+	hasKillServer := false
+	hasDetach := false
+
+	for _, item := range p.Items {
+		switch item.Action {
+		case ActionDetach:
+			hasDetach = true
+		case ActionKillSession:
+			hasKillSession = true
+		case ActionKillServer:
+			hasKillServer = true
+		}
+	}
+
+	if !hasDetach {
+		t.Error("expected palette to contain Detach action")
+	}
+	if !hasKillSession {
+		t.Error("expected palette to contain Kill Current Session action")
+	}
+	if !hasKillServer {
+		t.Error("expected palette to contain Quit dajimux (Stop Daemon) action")
+	}
+}

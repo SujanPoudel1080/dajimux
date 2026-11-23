@@ -53,6 +53,8 @@ const (
 	ActionScrollBottom     ActionType = "scroll_bottom"
 	ActionYank             ActionType = "yank"
 	ActionDetach           ActionType = "detach"
+	ActionKillSession      ActionType = "kill_session"
+	ActionKillServer       ActionType = "kill_server"
 	ActionSwapNext         ActionType = protocol.ActionSwapNext
 	ActionSwapLeft         ActionType = protocol.ActionSwapLeft
 	ActionSwapDown         ActionType = protocol.ActionSwapDown
@@ -299,6 +301,10 @@ func (h *InputHandler) handleNormalMode(data []byte) InputResult {
 			return InputResult{Action: ActionEnterScrollback, TargetMode: protocol.ModeScrollback}
 		case 'd', 'D': // Detach Session
 			res = InputResult{Action: ActionDetach}
+		case 'q': // Quit / Kill Current Session
+			res = InputResult{Action: ActionKillSession}
+		case 'Q': // Quit Server / Stop Daemon
+			res = InputResult{Action: ActionKillServer}
 		case '?': // Toggle Help Modal
 			res = InputResult{Action: ActionToggleHelp}
 		default:

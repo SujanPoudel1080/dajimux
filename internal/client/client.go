@@ -45,6 +45,7 @@ type Client struct {
 	dragStart         *DragPoint
 	compositors       map[string]*ANSICompositor
 	sysStatsCollector *sysstats.Collector
+	disconnectMsg     string
 }
 
 // NewClient initializes a client for the target session.
@@ -194,13 +195,27 @@ func (c *Client) readDaemonLoop() {
 		if err != nil {
 			if c.isRunning {
 				c.restoreTerminal()
-				fmt.Println("\nDisconnected from dajimux daemon.")
+				c.mu.Lock()
+				msg := c.disconnectMsg
+				c.mu.Unlock()
+				if msg != "" {
+					fmt.Printf("\n[dajimux: %s]\n", msg)
+				} else {
+					fmt.Println("\nDisconnected from dajimux daemon.")
+				}
 				os.Exit(0)
 			}
 			return
 		}
 
 		switch env.Type {
+		case protocol.MsgError:
+			var errMsg string
+			if err := json.Unmarshal(env.Payload, &errMsg); err == nil && errMsg != "" {
+				c.mu.Lock()
+				c.disconnectMsg = errMsg
+				c.mu.Unlock()
+			}
 		case protocol.MsgFrameUpdate:
 			var frame protocol.FrameUpdatePayload
 			if err := json.Unmarshal(env.Payload, &frame); err == nil {
@@ -525,6 +540,14 @@ func (c *Client) readStdinLoop() error {
 		case ActionDetach:
 			c.detach()
 			return nil
+
+		case ActionKillSession:
+			c.killSession()
+			return nil
+
+		case ActionKillServer:
+			c.stopServer()
+			return nil
 		}
 	}
 }
@@ -538,6 +561,34 @@ func (c *Client) detach() {
 	c.mu.Unlock()
 	c.restoreTerminal()
 	fmt.Printf("\n[dajimux: detached from session '%s']\n", c.SessionName)
+	os.Exit(0)
+}
+
+func (c *Client) killSession() {
+	payload, _ := json.Marshal(protocol.KillSessionRequest{
+		SessionName: c.SessionName,
+	})
+	_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
+		Type:    protocol.MsgKillSession,
+		Payload: payload,
+	})
+	c.mu.Lock()
+	c.isRunning = false
+	c.mu.Unlock()
+	c.restoreTerminal()
+	fmt.Printf("\n[dajimux: session '%s' terminated]\n", c.SessionName)
+	os.Exit(0)
+}
+
+func (c *Client) stopServer() {
+	_ = protocol.WriteEnvelope(c.conn, protocol.Envelope{
+		Type: protocol.MsgStopServer,
+	})
+	c.mu.Lock()
+	c.isRunning = false
+	c.mu.Unlock()
+	c.restoreTerminal()
+	fmt.Println("\n[dajimux: daemon stopped]")
 	os.Exit(0)
 }
 
