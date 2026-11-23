@@ -63,18 +63,28 @@ type TextContent struct {
 
 // Server implements a Model Context Protocol (MCP) server over standard IO.
 type Server struct {
-	Bridge  DaemonBridge
-	Version string
+	Bridge   DaemonBridge
+	Registry *ToolRegistry
+	Version  string
 }
 
-// NewServer initializes an MCP server.
+// NewServer initializes an MCP server with the default tool registry.
 func NewServer(bridge DaemonBridge, version string) *Server {
+	return NewServerWithRegistry(bridge, DefaultToolRegistry(), version)
+}
+
+// NewServerWithRegistry initializes an MCP server with a custom tool registry.
+func NewServerWithRegistry(bridge DaemonBridge, registry *ToolRegistry, version string) *Server {
 	if version == "" {
 		version = "0.1.4"
 	}
+	if registry == nil {
+		registry = DefaultToolRegistry()
+	}
 	return &Server{
-		Bridge:  bridge,
-		Version: version,
+		Bridge:   bridge,
+		Registry: registry,
+		Version:  version,
 	}
 }
 
@@ -144,7 +154,7 @@ func (s *Server) handleRequest(req JSONRPCRequest) JSONRPCResponse {
 
 	case "tools/list":
 		resp.Result = map[string]any{
-			"tools": s.listTools(),
+			"tools": s.Registry.List(),
 		}
 
 	case "tools/call":
@@ -160,7 +170,7 @@ func (s *Server) handleRequest(req JSONRPCRequest) JSONRPCResponse {
 			return resp
 		}
 
-		res, err := s.callTool(callParams.Name, callParams.Arguments)
+		res, err := s.Registry.Execute(callParams.Name, s.Bridge, callParams.Arguments)
 		if err != nil {
 			resp.Result = ToolCallResult{
 				IsError: true,
@@ -180,276 +190,4 @@ func (s *Server) handleRequest(req JSONRPCRequest) JSONRPCResponse {
 	}
 
 	return resp
-}
-
-func (s *Server) listTools() []Tool {
-	return []Tool{
-		{
-			Name:        "list_panes",
-			Description: "List all active dajimux sessions, workspaces, and pane IDs with bounding boxes, working directories, and agent statuses.",
-			InputSchema: InputSchema{
-				Type: "object",
-				Properties: map[string]PropertyDef{
-					"session": {Type: "string", Description: "Optional session name to filter by (lists all if empty)"},
-				},
-			},
-		},
-		{
-			Name:        "read_pane",
-			Description: "Capture recent output or scrollback lines from a specific dajimux pane.",
-			InputSchema: InputSchema{
-				Type: "object",
-				Properties: map[string]PropertyDef{
-					"pane_id": {Type: "string", Description: "Target pane ID (e.g. 'pane-1')"},
-					"lines":   {Type: "integer", Description: "Number of lines to capture (default 50)"},
-				},
-				Required: []string{"pane_id"},
-			},
-		},
-		{
-			Name:        "send_command",
-			Description: "Inject a shell command or keystrokes into a target pane.",
-			InputSchema: InputSchema{
-				Type: "object",
-				Properties: map[string]PropertyDef{
-					"pane_id":     {Type: "string", Description: "Target pane ID"},
-					"command":     {Type: "string", Description: "Shell command or input text to send"},
-					"press_enter": {Type: "boolean", Description: "Whether to append a newline to execute (default true)"},
-				},
-				Required: []string{"pane_id", "command"},
-			},
-		},
-		{
-			Name:        "spawn_pane",
-			Description: "Dynamically split and spawn a new terminal pane in a session workspace.",
-			InputSchema: InputSchema{
-				Type: "object",
-				Properties: map[string]PropertyDef{
-					"session":   {Type: "string", Description: "Target session name (default 'main')"},
-					"direction": {Type: "string", Description: "Split direction: 'vertical' (side-by-side) or 'horizontal' (top/bottom)", Enum: []string{"vertical", "horizontal"}},
-					"cwd":       {Type: "string", Description: "Working directory for the new pane"},
-					"command":   {Type: "string", Description: "Initial shell command to run in new pane"},
-				},
-			},
-		},
-		{
-			Name:        "close_pane",
-			Description: "Close and terminate a specific terminal pane by its ID, rebalancing the workspace layout.",
-			InputSchema: InputSchema{
-				Type: "object",
-				Properties: map[string]PropertyDef{
-					"pane_id": {Type: "string", Description: "Target pane ID to close (e.g. 'pane-2')"},
-				},
-				Required: []string{"pane_id"},
-			},
-		},
-		{
-			Name:        "rename_workspace",
-			Description: "Assign a custom display name to a workspace within a session.",
-			InputSchema: InputSchema{
-				Type: "object",
-				Properties: map[string]PropertyDef{
-					"session":   {Type: "string", Description: "Target session name (default active)"},
-					"workspace": {Type: "integer", Description: "Target workspace number (1-9, default active)"},
-					"name":      {Type: "string", Description: "New workspace display name (e.g. 'build', 'backend')"},
-				},
-				Required: []string{"name"},
-			},
-		},
-		{
-			Name:        "rename_session",
-			Description: "Rename an active dajimux session.",
-			InputSchema: InputSchema{
-				Type: "object",
-				Properties: map[string]PropertyDef{
-					"old_name": {Type: "string", Description: "Current session name"},
-					"new_name": {Type: "string", Description: "New session name"},
-				},
-				Required: []string{"old_name", "new_name"},
-			},
-		},
-		{
-			Name:        "set_agent_status",
-			Description: "Update the agent state and status badge displayed in a pane's header.",
-			InputSchema: InputSchema{
-				Type: "object",
-				Properties: map[string]PropertyDef{
-					"pane_id": {Type: "string", Description: "Target pane ID"},
-					"state":   {Type: "string", Description: "Agent state (e.g. idle, thinking, executing)"},
-					"badge":   {Type: "string", Description: "Visual status badge description (e.g. '🤖 Running tests')"},
-				},
-				Required: []string{"pane_id"},
-			},
-		},
-	}
-}
-
-func (s *Server) callTool(name string, args json.RawMessage) (ToolCallResult, error) {
-	switch name {
-	case "list_panes":
-		var params struct {
-			Session string `json:"session"`
-		}
-		_ = json.Unmarshal(args, &params)
-
-		panes, err := s.Bridge.ListPanes(params.Session)
-		if err != nil {
-			return ToolCallResult{}, err
-		}
-
-		data, _ := json.MarshalIndent(panes, "", "  ")
-		return ToolCallResult{
-			Content: []TextContent{
-				{Type: "text", Text: string(data)},
-			},
-		}, nil
-
-	case "read_pane":
-		var params struct {
-			PaneID string `json:"pane_id"`
-			Lines  int    `json:"lines"`
-		}
-		if err := json.Unmarshal(args, &params); err != nil || params.PaneID == "" {
-			return ToolCallResult{}, fmt.Errorf("pane_id is required")
-		}
-		if params.Lines <= 0 {
-			params.Lines = 50
-		}
-
-		lines, err := s.Bridge.ReadPane(params.PaneID, params.Lines)
-		if err != nil {
-			return ToolCallResult{}, err
-		}
-
-		return ToolCallResult{
-			Content: []TextContent{
-				{Type: "text", Text: strings.Join(lines, "\n")},
-			},
-		}, nil
-
-	case "send_command":
-		var params struct {
-			PaneID     string `json:"pane_id"`
-			Command    string `json:"command"`
-			PressEnter *bool  `json:"press_enter"`
-		}
-		if err := json.Unmarshal(args, &params); err != nil || params.PaneID == "" || params.Command == "" {
-			return ToolCallResult{}, fmt.Errorf("pane_id and command are required")
-		}
-
-		pressEnter := true
-		if params.PressEnter != nil {
-			pressEnter = *params.PressEnter
-		}
-
-		if err := s.Bridge.SendCommand(params.PaneID, params.Command, pressEnter); err != nil {
-			return ToolCallResult{}, err
-		}
-
-		return ToolCallResult{
-			Content: []TextContent{
-				{Type: "text", Text: fmt.Sprintf("Command sent to %s successfully.", params.PaneID)},
-			},
-		}, nil
-
-	case "spawn_pane":
-		var params struct {
-			Session   string `json:"session"`
-			Direction string `json:"direction"`
-			Cwd       string `json:"cwd"`
-			Command   string `json:"command"`
-		}
-		_ = json.Unmarshal(args, &params)
-
-		paneID, err := s.Bridge.SpawnPane(params.Session, params.Direction, params.Cwd, params.Command)
-		if err != nil {
-			return ToolCallResult{}, err
-		}
-
-		return ToolCallResult{
-			Content: []TextContent{
-				{Type: "text", Text: fmt.Sprintf("Spawned pane %s successfully.", paneID)},
-			},
-		}, nil
-
-	case "close_pane":
-		var params struct {
-			PaneID string `json:"pane_id"`
-		}
-		if err := json.Unmarshal(args, &params); err != nil || params.PaneID == "" {
-			return ToolCallResult{}, fmt.Errorf("pane_id is required")
-		}
-
-		if err := s.Bridge.ClosePane(params.PaneID); err != nil {
-			return ToolCallResult{}, err
-		}
-
-		return ToolCallResult{
-			Content: []TextContent{
-				{Type: "text", Text: fmt.Sprintf("Pane %s closed successfully.", params.PaneID)},
-			},
-		}, nil
-
-	case "rename_workspace":
-		var params struct {
-			Session   string `json:"session"`
-			Workspace int    `json:"workspace"`
-			Name      string `json:"name"`
-		}
-		if err := json.Unmarshal(args, &params); err != nil || params.Name == "" {
-			return ToolCallResult{}, fmt.Errorf("name is required")
-		}
-
-		if err := s.Bridge.RenameWorkspace(params.Session, params.Workspace, params.Name); err != nil {
-			return ToolCallResult{}, err
-		}
-
-		return ToolCallResult{
-			Content: []TextContent{
-				{Type: "text", Text: fmt.Sprintf("Workspace renamed to %q successfully.", params.Name)},
-			},
-		}, nil
-
-	case "rename_session":
-		var params struct {
-			OldName string `json:"old_name"`
-			NewName string `json:"new_name"`
-		}
-		if err := json.Unmarshal(args, &params); err != nil || params.OldName == "" || params.NewName == "" {
-			return ToolCallResult{}, fmt.Errorf("old_name and new_name are required")
-		}
-
-		if err := s.Bridge.RenameSession(params.OldName, params.NewName); err != nil {
-			return ToolCallResult{}, err
-		}
-
-		return ToolCallResult{
-			Content: []TextContent{
-				{Type: "text", Text: fmt.Sprintf("Session %q renamed to %q successfully.", params.OldName, params.NewName)},
-			},
-		}, nil
-
-	case "set_agent_status":
-		var params struct {
-			PaneID string `json:"pane_id"`
-			State  string `json:"state"`
-			Badge  string `json:"badge"`
-		}
-		if err := json.Unmarshal(args, &params); err != nil || params.PaneID == "" {
-			return ToolCallResult{}, fmt.Errorf("pane_id is required")
-		}
-
-		if err := s.Bridge.SetAgentStatus(params.PaneID, params.State, params.Badge); err != nil {
-			return ToolCallResult{}, err
-		}
-
-		return ToolCallResult{
-			Content: []TextContent{
-				{Type: "text", Text: fmt.Sprintf("Status updated for pane %s: state=%q, badge=%q", params.PaneID, params.State, params.Badge)},
-			},
-		}, nil
-
-	default:
-		return ToolCallResult{}, fmt.Errorf("unknown tool: %s", name)
-	}
 }
