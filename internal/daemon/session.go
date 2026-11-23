@@ -25,8 +25,9 @@ type Session struct {
 	Rows        int
 	Config      *config.Config
 	paneCounter int
-	isClosed    bool
+	isClosed      bool
 	OnStateChange func(state protocol.LayoutStatePayload)
+	OnTerminate   func(sessionName string)
 }
 
 // NewSession initializes a session with workspace 1 and an initial pane using default configuration.
@@ -362,6 +363,19 @@ func (s *Session) ClosePaneByID(paneID string) error {
 	delete(s.Panes, paneID)
 	s.Broker.RemovePane(paneID)
 
+	// If all panes across all workspaces have exited, terminate the session
+	if len(s.Panes) == 0 {
+		s.isClosed = true
+		termCb := s.OnTerminate
+		sessName := s.Name
+		s.mu.Unlock()
+		_ = pane.Close()
+		if termCb != nil {
+			termCb(sessName)
+		}
+		return nil
+	}
+
 	// Locate workspace holding this pane
 	var targetWS *Workspace
 	var targetWSID int
@@ -386,28 +400,21 @@ func (s *Session) ClosePaneByID(paneID string) error {
 	}
 
 	if targetWS.IsEmpty() {
-		// Workspace empty; delete workspace unless it's ws 1
-		if targetWSID != 1 {
-			delete(s.Workspaces, targetWSID)
-			if s.ActiveWS == targetWSID {
-				s.ActiveWS = 1
+		// Workspace empty; delete workspace and switch to an existing workspace
+		delete(s.Workspaces, targetWSID)
+		if s.ActiveWS == targetWSID {
+			for wsID := range s.Workspaces {
+				s.ActiveWS = wsID
+				break
 			}
-		} else if !s.isClosed {
-			// Respawn single initial pane in ws 1
-			newID := s.nextPaneID()
-			newPane := s.createPane(newID, "shell")
-			s.Panes[newID] = newPane
-			targetWS.SetRootPane(newID)
-			env := []string{
-				fmt.Sprintf("DAJIMUX_SESSION=%s", s.Name),
-				fmt.Sprintf("DAJIMUX_WORKSPACE=%d", 1),
-			}
-			_ = newPane.Start(s.defaultShell(), s.Cols, s.Rows-2, env)
 		}
 	}
 
-	targetWS.Layout(s.Cols, s.Rows)
-	s.syncPaneSizes(targetWS)
+	activeWS := s.Workspaces[s.ActiveWS]
+	if activeWS != nil {
+		activeWS.Layout(s.Cols, s.Rows)
+		s.syncPaneSizes(activeWS)
+	}
 
 	shouldNotify := !s.isClosed
 	s.mu.Unlock()

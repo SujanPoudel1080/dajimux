@@ -133,6 +133,11 @@ func (d *Daemon) GetOrCreateSession(name string, cols, rows int) (*Session, erro
 				d.broadcastLayoutState(name, state)
 			})
 			if err == nil {
+				s.OnTerminate = func(sessionName string) {
+					go func() {
+						_ = d.KillSession(sessionName)
+					}()
+				}
 				d.Sessions[name] = s
 				return s, nil
 			}
@@ -144,6 +149,12 @@ func (d *Daemon) GetOrCreateSession(name string, cols, rows int) (*Session, erro
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	s.OnTerminate = func(sessionName string) {
+		go func() {
+			_ = d.KillSession(sessionName)
+		}()
 	}
 
 	d.Sessions[name] = s
@@ -470,9 +481,6 @@ func (d *Daemon) KillSession(name string) error {
 		return fmt.Errorf("session %q not found", name)
 	}
 
-	// Terminate all panes in the session
-	sess.Close()
-
 	// Detach connected clients
 	for conn, entry := range d.clients {
 		if entry.session != nil && entry.session.Name == name {
@@ -490,6 +498,9 @@ func (d *Daemon) KillSession(name string) error {
 
 	delete(d.Sessions, name)
 	d.mu.Unlock()
+
+	// Terminate all panes in the session
+	sess.Close()
 
 	_ = d.SaveState("")
 	return nil
@@ -575,6 +586,11 @@ func (d *Daemon) RestoreSessions(path string) error {
 				d.broadcastLayoutState(name, lsp)
 			})
 			if err == nil {
+				sess.OnTerminate = func(sessionName string) {
+					go func() {
+						_ = d.KillSession(sessionName)
+					}()
+				}
 				d.Sessions[name] = sess
 			}
 		}
@@ -587,6 +603,16 @@ func (d *Daemon) RestoreSessions(path string) error {
 func (d *Daemon) Stop() {
 	d.mu.Lock()
 	d.isClosing = true
+
+	// Detach all connected clients before closing listener
+	for conn, entry := range d.clients {
+		_ = entry.writer.Write(protocol.Envelope{
+			Type:    protocol.MsgError,
+			Payload: []byte(`"dajimux daemon stopped"`),
+		})
+		_ = conn.Close()
+	}
+	d.clients = make(map[net.Conn]*clientEntry)
 	d.mu.Unlock()
 
 	// Automatically persist state on stop

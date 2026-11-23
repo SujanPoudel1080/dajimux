@@ -75,3 +75,37 @@ func TestConcurrentSessionAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestSessionTerminateOnLastPaneClose(t *testing.T) {
+	s, err := NewSession("test-terminate", 80, 24, nil)
+	if err != nil {
+		t.Fatalf("NewSession failed: %v", err)
+	}
+	defer s.Close()
+
+	terminated := false
+	var terminatedSession string
+	s.OnTerminate = func(name string) {
+		terminated = true
+		terminatedSession = name
+	}
+
+	active := s.ActivePane()
+	if active == nil {
+		t.Fatalf("expected active pane to exist")
+	}
+
+	if err := s.ClosePaneByID(active.ID); err != nil {
+		t.Fatalf("ClosePaneByID failed: %v", err)
+	}
+
+	if !terminated {
+		t.Error("expected OnTerminate to be called when closing the last pane")
+	}
+	if terminatedSession != "test-terminate" {
+		t.Errorf("expected terminated session name 'test-terminate', got %q", terminatedSession)
+	}
+	if !s.isClosed {
+		t.Error("expected session to be marked closed")
+	}
+}
