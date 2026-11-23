@@ -79,6 +79,16 @@ func TestANSICompositorCursorOffset(t *testing.T) {
 			input:  []byte("\033]0;my title\a"),
 			expect: []byte("\033]0;my title\a"),
 		},
+		{
+			name:   "keypad application and numeric mode passed through without stray characters",
+			input:  []byte("\033=\033>"),
+			expect: []byte("\033=\033>"),
+		},
+		{
+			name:   "charset designation G0 ASCII passed through",
+			input:  []byte("\033(B"),
+			expect: []byte("\033(B"),
+		},
 	}
 
 	for _, tt := range tests {

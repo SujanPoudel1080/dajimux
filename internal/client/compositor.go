@@ -166,7 +166,7 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 		case '[': // CSI sequences
 			// Find sequence terminator (letter or byte between 0x40 and 0x7E)
 			j := i + 2
-			for j < len(input) && (input[j] == ';' || input[j] == '?' || input[j] == ' ' || (input[j] >= '0' && input[j] <= '9')) {
+			for j < len(input) && (input[j] >= 0x20 && input[j] <= 0x3f) {
 				j++
 			}
 			if j >= len(input) {
@@ -331,6 +331,32 @@ func (ac *ANSICompositor) Rewrite(input []byte) []byte {
 			i += 2
 
 		case 'c': // Full terminal reset — drop
+			i += 2
+
+		case '=', '>': // DECKPAM / DECKPNM application/numeric keypad mode (smkx/rmkx) — pass through intact
+			out = append(out, input[i:i+2]...)
+			i += 2
+
+		case '(', ')', '*', '+': // Designate character set (G0-G3, e.g. ESC ( B)
+			if i+2 < len(input) {
+				out = append(out, input[i:i+3]...)
+				i += 3
+			} else {
+				out = append(out, input[i:]...)
+				i = len(input)
+			}
+
+		case 'M': // Reverse Index (RI) - cursor up or scroll down within pane
+			ac.curRow = clamp(ac.curRow-1, 1, ac.h)
+			out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.curCol+ac.offX-1)...)
+			cursorSynchronized = true
+			i += 2
+
+		case 'E': // Next Line (NEL)
+			ac.curRow = clamp(ac.curRow+1, 1, ac.h)
+			ac.curCol = 1
+			out = append(out, fmt.Sprintf("\033[%d;%dH", ac.curRow+ac.offY-1, ac.offX)...)
+			cursorSynchronized = true
 			i += 2
 
 		default:

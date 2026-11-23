@@ -1008,6 +1008,8 @@ func (c *Client) restoreTerminal() {
 	}
 	// Disable mouse tracking
 	fmt.Print("\033[?1006l\033[?1002l\033[?1000l")
+	// Reset keypad to numeric mode
+	fmt.Print("\033>")
 	// Reset scrolling region to full screen
 	fmt.Print("\033[r")
 	// Exit alternate screen buffer
